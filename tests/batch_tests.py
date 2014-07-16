@@ -1,9 +1,9 @@
 from unittest import TestCase
 
 import gevent
-from gevent import sleep
+from gevent.lock import BoundedSemaphore
 
-from gbatchy.context import spawn
+from gbatchy.context import spawn, batch_context
 from gbatchy.batch import batched
 
 class BatchTests(TestCase):
@@ -12,7 +12,7 @@ class BatchTests(TestCase):
         @batched()
         def fn(arg_list):
             N_CALLS[0] += 1
-            sleep(0.01)
+            gevent.sleep(0.01)
 
         def test():
             g1 = spawn(fn, 1)
@@ -35,12 +35,12 @@ class BatchTests(TestCase):
 
         def get_thing_1_sleep():
             fn(1)
-            sleep(0)
+            gevent.sleep(0)
             fn(2)
 
         def get_thing_2():
             fn(2)
-            sleep(0.0001)  # "block" the greenlet for e.g. a mysql query.
+            gevent.sleep(0.0001)  # "block" the greenlet for e.g. a mysql query.
             fn(1)
 
         def test(thing_1):
@@ -77,3 +77,39 @@ class BatchTests(TestCase):
         # future.
         self.assertEquals([[(2,)], [(2,)], [(1,), (1,), (3,), (3,)]],
                           CALLS)
+
+    def test_batch_return_value(self):
+        @batched(accepts_kwargs=False)
+        def fn(arg_list):
+            return [x[0] for x in arg_list]
+
+        @batch_context
+        def test():
+            a, b = spawn(fn, 1), spawn(fn, 2)
+            return a.get(), b.get()
+
+        self.assertEquals((1, 2), test())
+
+    def test_concurrent_batching(self):
+        lock = BoundedSemaphore(1)
+        lock.acquire()  # now 0
+
+        N_CALLS = [0]
+
+        @batched()
+        def fn(arg_list):
+            N_CALLS[0] += 1
+            lock.acquire()
+
+        @batched()
+        def fn2(arg_list):
+            N_CALLS[0] += 1
+            lock.release()
+
+        @batch_context
+        def test():
+            a, b = spawn(fn), spawn(fn2)
+            self.assertEquals(0, N_CALLS[0])
+            a.get(), b.get()
+
+        test()  # shouldn't hang.

@@ -1,4 +1,4 @@
-from functools import wraps
+from functools import wraps, partial
 from gevent import Greenlet as _GeventGreenlet, getcurrent, Timeout, get_hub
 from gevent.event import AsyncResult as _GeventAsyncResult
 from weakref import WeakSet
@@ -157,10 +157,15 @@ class BatchAsyncResult(_GeventAsyncResult):
 
 spawn = BatchGreenlet.spawn
 
-def in_context(fn):
+def batch_context(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
+        is_future = kwargs.pop('future', False)
         if get_context() is None:
-            return spawn(fn, *args, **kwargs).get()
-        return fn(*args, **kwargs)
+            future = spawn(fn, *args, **kwargs)
+            return future if is_future else future.get()
+        elif is_future:
+            return spawn(fn, *args, **kwargs)
+        else:
+            return fn(*args, **kwargs)
     return wrapper

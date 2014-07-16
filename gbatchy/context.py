@@ -70,6 +70,7 @@ class BatchGreenlet(_GeventGreenlet):
         self.rawlink(self.context.greenlet_finished)
 
         self.is_blocked = True
+        self._exc_info = None
 
     def awaiting_batch(self):
         assert not self.is_blocked
@@ -83,12 +84,23 @@ class BatchGreenlet(_GeventGreenlet):
             self.context.greenlet_unblocked(self)
         return super(BatchGreenlet, self).switch(*args, **kwargs)
 
+    def _report_error(self, exc_info):
+        """Overridden to add the traceback."""
+        self._exc_info = exc_info
+        super(BatchGreenlet, self)._report_error(exc_info)
+
+    def _get(self):
+        if self.successful():
+            return self.value
+        else:
+            raise self._exc_info[0], self._exc_info[1], self._exc_info[2]
+
     def get(self, block=True, timeout=None):
         if self.ready():
-            return super(BatchGreenlet, self).get(block=block, timeout=timeout)
+            return self._get()
         elif block:
             self.join(timeout=timeout)
-            return super(BatchGreenlet, self).get(block=block, timeout=timeout)
+            return self._get()
         else:
             raise Timeout()
 
@@ -120,12 +132,28 @@ class BatchGreenlet(_GeventGreenlet):
 
 class BatchAsyncResult(_GeventAsyncResult):
     """A slight wrapper around AsyncResult that notifies the greenlet that it's waiting for a batch result."""
+
+    def _get(self):
+        if self.successful():
+            return self.value
+        elif self._exc_info:
+            try:
+                raise self._exc_info[0], self._exc_info[1], self._exc_info[2]
+            finally:
+                self._exc_info = None  # break ref cycle. _exception should still work, but the TB will be wrong.
+        else:
+            raise self._exception
+
+    def set_exc_info(self, exc_info):
+        self._exc_info = exc_info
+        self.set_exception(exc_info[0])
+
     def get(self, block=True, timeout=None):
         if self.ready():
-            return super(BatchAsyncResult, self).get(block=block, timeout=timeout)
+            return self._get()
         elif block:
             self.wait(timeout=timeout)
-            return super(BatchAsyncResult, self).get(block=block, timeout=timeout)
+            return self._get()
         else:
             raise Timeout()
 

@@ -1,3 +1,5 @@
+import sys
+
 from .context import spawn
 
 def switch_if_not_dead(greenlet, value):
@@ -29,9 +31,9 @@ class Scheduler(object):
 
             for ar, r in zip(aresults, result):
                 ar.set(r)
-        except Exception as ex:
+        except Exception:
             for ar in aresults:
-                ar.set_exception(ex)
+                ar.set_exc_info(sys.exc_info())
 
 class AllAtOnceScheduler(Scheduler):
     __slots__ = ['pending_batches']

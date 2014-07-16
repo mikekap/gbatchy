@@ -5,6 +5,7 @@ from gevent.lock import BoundedSemaphore
 
 from gbatchy.context import spawn, batch_context
 from gbatchy.batch import batched
+from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered
 
 class BatchTests(TestCase):
     def test_batch_works(self):
@@ -113,3 +114,16 @@ class BatchTests(TestCase):
             a.get(), b.get()
 
         test()  # shouldn't hang.
+
+    def test_utils(self):
+        def add_1(i):
+            return i + 1
+
+        def only_even(i):
+            return i % 2 == 0
+
+        self.assertEquals([2,3,4], pmap(add_1, [1,2,3]))
+        self.assertEquals([2], pfilter(only_even, [1,2,3]))
+
+        self.assertEquals([2,3,4], sorted(pmap_unordered(add_1, [1,2,3])))
+        self.assertEquals([2], list(pfilter_unordered(only_even, [1,2,3])))

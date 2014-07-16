@@ -1,0 +1,2 @@
+include versioneer.py
+include gbatchy/_version.py

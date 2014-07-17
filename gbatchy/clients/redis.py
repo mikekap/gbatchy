@@ -1,6 +1,8 @@
 from functools import partial
 
 from ..batch import class_batched
+from ..context import spawn
+from ..utils import pget
 
 class BatchRedisClient(object):
     def __init__(self, redis_client):
@@ -12,7 +14,7 @@ class BatchRedisClient(object):
 
     def pipeline(self, *args, **kwargs):
         """.pipeline() is a pass-through."""
-        return BatchRedisPipeline(*args, **kwargs)
+        return BatchRedisPipeline(self, *args, **kwargs)
 
     def brpop(self, key, timeout=0):
         return self.redis.brpop(key, timeout)
@@ -57,11 +59,17 @@ class BatchRedisPipeline(object):
         self._batch_calls.append((args, kwargs))
         return self
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self._batch_calls = []
+
     def execute(self):
         try:
             if self._silent_failure:
-                return [self.redis._batch_call(*a, **kw) for a, kw in self._batch_calls]
+                return pget(spawn(self.redis._silent_batch_call, *a, **kw) for a, kw in self._batch_calls)
             else:
-                return [self.redis._silent_batch_call(*a, **kw) for a, kw in self._batch_calls]
+                return pget(spawn(self.redis._batch_call, *a, **kw) for a, kw in self._batch_calls)
         finally:
             self._batch_calls = []

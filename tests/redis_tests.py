@@ -40,3 +40,16 @@ class RedisClientTests(TestCase):
             return a.get() + b.get()
 
         self.assertEquals(3, test())
+
+    def test_pipeline(self):
+        @batch_context
+        def test():
+            with self.client.pipeline() as p:
+                p.set(self.key_prefix + 'yes', '1')
+                p.set(self.key_prefix + 'yes', '2')
+
+                self.assertIsNone(self.client.get(self.key_prefix + 'yes'))
+                p.execute()
+                self.assertEquals('2', self.client.get(self.key_prefix + 'yes'))
+
+        test()

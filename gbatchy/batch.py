@@ -2,7 +2,6 @@ from functools import wraps, partial
 
 from .context import get_context, BatchAsyncResult, batch_context
 
-
 def _batch_wait(fn_id, fn, args):
     global get_context, BatchAsyncResult
     r = BatchAsyncResult()

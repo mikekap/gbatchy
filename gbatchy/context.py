@@ -61,8 +61,18 @@ def get_context():
     global getcurrent
     return getattr(getcurrent(), 'context', None)
 
+
+AUTO_WRAPPERS = []
+def add_auto_wrapper(fn):
+    """Adds decorator fn that wraps every function that gets called in a BatchGreenlet.
+    This might be useful to e.g. propagate context."""
+    global AUTO_WRAPPERS
+    AUTO_WRAPPERS.append(fn)
+
+
 class BatchGreenlet(_GeventGreenlet):
     def __init__(self, *args, **kwargs):
+        global AUTO_WRAPPERS
         super(BatchGreenlet, self).__init__(*args, **kwargs)
 
         self.context = get_context() or CONTEXT_FACTORY()
@@ -71,6 +81,9 @@ class BatchGreenlet(_GeventGreenlet):
 
         self.is_blocked = True
         self._exc_info = None
+
+        for wrapper in AUTO_WRAPPERS:
+            self._run = wrapper(self._run)
 
     def awaiting_batch(self):
         assert not self.is_blocked
@@ -132,6 +145,11 @@ class BatchGreenlet(_GeventGreenlet):
 
 class BatchAsyncResult(_GeventAsyncResult):
     """A slight wrapper around AsyncResult that notifies the greenlet that it's waiting for a batch result."""
+
+    def __init__(self, *args, **kwargs):
+        super(BatchAsyncResult, self).__init__(*args, **kwargs)
+
+        self._exc_info = None
 
     def _get(self):
         if self.successful():

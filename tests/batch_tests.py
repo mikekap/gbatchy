@@ -5,9 +5,18 @@ from gevent.lock import BoundedSemaphore
 
 from gbatchy.context import spawn, batch_context
 from gbatchy.batch import batched
+from gbatchy.scheduler import Raise
 from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered
 
 class BatchTests(TestCase):
+    def setUp(self):
+        # Quiet gevent's internal exception printing.
+        self.old_print_exception = gevent.get_hub().print_exception
+        gevent.get_hub().print_exception = lambda context, type, value, tb: None
+
+    def tearDown(self):
+        gevent.get_hub().print_exception = self.old_print_exception
+
     def test_batch_works(self):
         N_CALLS = [0]
         @batched()
@@ -23,6 +32,21 @@ class BatchTests(TestCase):
             return N_CALLS[0]
 
         self.assertEquals(1, spawn(test).get())
+
+    def test_batched_raise(self):
+        N_CALLS = [0]
+        @batched(accepts_kwargs=False)
+        def fn(arg_list):
+            N_CALLS[0] += 1
+            return [i[0] if i[0] % 2 == 0 else Raise(ValueError("You're weird")) for i in arg_list]
+
+        @batch_context
+        def test():
+            a, b = spawn(fn, 1), spawn(fn, 2)
+            self.assertEquals(2, b.get())
+            self.assertRaises(ValueError, a.get)
+
+        test()
 
     def test_multipath_batch_works(self):
         N_CALLS = [0]

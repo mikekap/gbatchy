@@ -2,14 +2,6 @@ import sys
 
 from .context import spawn
 
-def switch_if_not_dead(greenlet, value):
-    if not greenlet.dead:
-        greenlet.switch(value)
-
-def kill_if_not_dead(greenlet, *exc):
-    if not greenlet.dead:
-        greenlet.throw(*exc)
-
 class Scheduler(object):
     __slots__ = []
 
@@ -29,11 +21,20 @@ class Scheduler(object):
             if result is None:
                 result = [None] * len(aresults)
 
-            for ar, r in zip(aresults, result):
-                ar.set(r)
+            if len(result) != len(aresults):
+                raise ValueError('Batch function %s did not return enough results (needed %d got %d)' % (
+                    fn, len(aresults), len(result)))
         except Exception:
-            for ar in aresults:
-                ar.set_exc_info(sys.exc_info())
+            result = [Raise(*sys.exc_info())] * len(aresults)
+
+        for ar, r in zip(aresults, result):
+            if isinstance(r, Raise):
+                if len(r.exc_info) == 3:
+                    ar.set_exc_info(r.exc_info)
+                else:
+                    ar.set_exception(r.exc_info[0])
+            else:
+                ar.set(r)
 
 class AllAtOnceScheduler(Scheduler):
     __slots__ = ['pending_batches']
@@ -58,3 +59,11 @@ class AllAtOnceScheduler(Scheduler):
         for function, args, aresults in self.pending_batches.itervalues():
             spawn(self.run_batch_fn, function, args, aresults)
         self.pending_batches.clear()
+
+
+class Raise(object):
+    """You can return this as a result of a batch function to signal throwing an exception.
+
+    This may be useful if you want to throw only for some of the batched cases."""
+    def __init__(self, *exc_info):
+        self.exc_info = exc_info

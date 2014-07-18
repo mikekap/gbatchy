@@ -22,6 +22,12 @@ class BatchRedisClient(object):
     def blpop(self, key, timeout=0):
         return self.redis.blpop(key, timeout)
 
+    def flush(self):
+        return self.redis.flush()
+
+    def flushdb(self):
+        return self.redis.flushdb()
+
     def __getattr__(self, name):
         method = partial(self._batch_call, name)
         setattr(self, name, method)

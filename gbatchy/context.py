@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from functools import wraps
 from gevent import Greenlet as _GeventGreenlet, getcurrent, Timeout, get_hub
 from gevent.event import AsyncResult as _GeventAsyncResult
@@ -77,7 +78,7 @@ class _Context(object):
     def greenlet_blocked(self, g):
         self.num_blocked += 1
 
-        if not self._scheduled_callback:
+        if not self._scheduled_callback and self.num_blocked == self.num_greenlets:
             self._scheduled_callback = self.hub.loop.run_callback(self._maybe_run_scheduler)
 
     def greenlet_unblocked(self, g):
@@ -86,7 +87,7 @@ class _Context(object):
     def greenlet_finished(self, g):
         self.num_greenlets -= 1
 
-        if not self._scheduled_callback:
+        if not self._scheduled_callback and self.num_blocked == self.num_greenlets:
             self._scheduled_callback = self.hub.loop.run_callback(self._maybe_run_scheduler)
 
     def _maybe_run_scheduler(self):
@@ -119,6 +120,21 @@ def add_auto_wrapper(fn):
     This might be useful to e.g. propagate context."""
     global AUTO_WRAPPERS
     AUTO_WRAPPERS.append(fn)
+
+# We store a list of all the greenlets/other objects that are storing exc_info so we can limit the set of
+# exc_infos in memory. It's a somewhat nasty hack to get rid of ref cycles.
+MAX_EXC_INFOS = 10
+_EXC_INFO_LIST = OrderedDict()
+
+def _add_exc_info_object(obj):
+    global _EXC_INFO_LIST, MAX_EXC_INFOS
+    if len(_EXC_INFO_LIST) >= MAX_EXC_INFOS:
+        _EXC_INFO_LIST.popitem(last=True)[0]._exc_info = None
+    _EXC_INFO_LIST[obj] = True
+
+def _remove_exc_info_object(obj):
+    global _EXC_INFO_LIST
+    _EXC_INFO_LIST.pop(obj, None)
 
 
 class BatchGreenlet(_GeventGreenlet):
@@ -162,6 +178,7 @@ class BatchGreenlet(_GeventGreenlet):
     def _report_error(self, exc_info):
         """Overridden to add the traceback."""
         self._exc_info = exc_info
+        _add_exc_info_object(self)
         super(BatchGreenlet, self)._report_error(exc_info)
 
     def _get(self):
@@ -169,6 +186,7 @@ class BatchGreenlet(_GeventGreenlet):
             return self.value
         elif self._exc_info:
             (cls, val, tb), self._exc_info = self._exc_info, None
+            _remove_exc_info_object(self)
             raise cls, val, tb
         else:
             raise self._exception
@@ -239,18 +257,20 @@ class BatchAsyncResult(_GeventAsyncResult):
                 self.hub.handle_error((link, self), *sys.exc_info())
         del self._links[:]
 
+    def set_exc_info(self, exc_info):
+        self._exc_info = exc_info
+        _add_exc_info_object(self)
+        self.set_exception(exc_info[0])
+
     def _get(self):
         if self._exception is None:
             return self.value
         elif self._exc_info:
             (cls, val, tb), self._exc_info = self._exc_info, None
+            _remove_exc_info_object(self)
             raise cls, val, tb
         else:
             raise self._exception
-
-    def set_exc_info(self, exc_info):
-        self._exc_info = exc_info
-        self.set_exception(exc_info[0])
 
     def get(self, block=True, timeout=None):
         if block:

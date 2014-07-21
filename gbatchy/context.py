@@ -1,14 +1,15 @@
-from functools import wraps, partial
+from functools import wraps
 from gevent import Greenlet as _GeventGreenlet, getcurrent, Timeout, get_hub
 from gevent.event import AsyncResult as _GeventAsyncResult
-from weakref import WeakSet
+import sys
 
 class _Context(object):
+    __slots__ = ['hub', 'greenlets', 'blocked_greenlets', 'scheduler', '_scheduled_callback']
+
     def __init__(self, scheduler_class=None):
-        super(_Context, self).__init__()
         self.hub = get_hub()
-        self.greenlets = WeakSet()
-        self.blocked_greenlets = WeakSet()
+        self.greenlets = set()
+        self.blocked_greenlets = set()
 
         if scheduler_class is None:
             from .scheduler import AllAtOnceScheduler
@@ -75,6 +76,8 @@ class BatchGreenlet(_GeventGreenlet):
         global AUTO_WRAPPERS
         super(BatchGreenlet, self).__init__(*args, **kwargs)
 
+        self._links = []  # override the greenlet-native _links to use a list, which is faster for small numbers of links.
+
         self.context = get_context() or CONTEXT_FACTORY()
         self.context.greenlet_created(self)
         self.rawlink(self.context.greenlet_finished)
@@ -84,6 +87,16 @@ class BatchGreenlet(_GeventGreenlet):
 
         for wrapper in AUTO_WRAPPERS:
             self._run = wrapper(self._run)
+
+    def _notify_links(self):
+        try:
+            for link in self._links:
+                try:
+                    link(self)
+                except:
+                    self.parent.handle_error((link, self), *sys.exc_info())
+        finally:
+            self._links = []
 
     def awaiting_batch(self):
         assert not self.is_blocked
@@ -103,16 +116,32 @@ class BatchGreenlet(_GeventGreenlet):
         super(BatchGreenlet, self)._report_error(exc_info)
 
     def _get(self):
-        if self.successful():
+        if self._exception is None:
             return self.value
+        elif self._exc_info:
+            (cls, val, tb), self._exc_info = self._exc_info, None
+            raise cls, val, tb
         else:
-            raise self._exc_info[0], self._exc_info[1], self._exc_info[2]
+            raise self._exception
 
     def get(self, block=True, timeout=None):
-        if self.ready():
+        if block:
+            if not self.ready():
+                switch = getcurrent().switch
+                self.rawlink(switch)
+                try:
+                    t = Timeout.start_new(timeout)
+                    try:
+                        getattr(getcurrent(), 'awaiting_batch', lambda: None)()
+                        result = self.parent.switch()
+                        assert result is self, 'Invalid switch into Greenlet.join(): %r' % (result, )
+                    finally:
+                        t.cancel()
+                except:
+                    self.unlink(switch)
+                    raise
             return self._get()
-        elif block:
-            self.join(timeout=timeout)
+        elif self.ready():
             return self._get()
         else:
             raise Timeout()
@@ -150,15 +179,24 @@ class BatchAsyncResult(_GeventAsyncResult):
         super(BatchAsyncResult, self).__init__(*args, **kwargs)
 
         self._exc_info = None
+        self._links = []
+
+    def _notify_links(self):
+        try:
+            for link in self._links:
+                try:
+                    link(self)
+                except:
+                    self.hub.handle_error((link, self), *sys.exc_info())
+        finally:
+            self._links = []
 
     def _get(self):
-        if self.successful():
+        if self._exception is None:
             return self.value
         elif self._exc_info:
-            try:
-                raise self._exc_info[0], self._exc_info[1], self._exc_info[2]
-            finally:
-                self._exc_info = None  # break ref cycle. _exception should still work, but the TB will be wrong.
+            (cls, val, tb), self._exc_info = self._exc_info, None
+            raise cls, val, tb
         else:
             raise self._exception
 
@@ -167,10 +205,24 @@ class BatchAsyncResult(_GeventAsyncResult):
         self.set_exception(exc_info[0])
 
     def get(self, block=True, timeout=None):
-        if self.ready():
+        if block:
+            if not self.ready():
+                switch = getcurrent().switch
+                self.rawlink(switch)
+                try:
+                    timer = Timeout.start_new(timeout)
+                    try:
+                        getattr(getcurrent(), 'awaiting_batch', lambda: None)()
+                        result = self.hub.switch()
+                        assert result is self, 'Invalid switch into AsyncResult.wait(): %r' % (result, )
+                    finally:
+                        timer.cancel()
+                except:
+                    self.unlink(switch)
+                    raise
+                
             return self._get()
-        elif block:
-            self.wait(timeout=timeout)
+        elif self.ready():
             return self._get()
         else:
             raise Timeout()
@@ -206,12 +258,9 @@ spawn = BatchGreenlet.spawn
 def batch_context(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        is_future = kwargs.pop('future', False)
-        if get_context() is None:
-            future = spawn(fn, *args, **kwargs)
-            return future if is_future else future.get()
-        elif is_future:
-            return spawn(fn, *args, **kwargs)
+        global getcurrent
+        if getattr(getcurrent(), 'context', None) is None:
+            return spawn(fn, *args, **kwargs).get()
         else:
             return fn(*args, **kwargs)
     return wrapper

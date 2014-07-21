@@ -3,22 +3,22 @@ from gevent import Greenlet as _GeventGreenlet, getcurrent, Timeout, get_hub
 from gevent.event import AsyncResult as _GeventAsyncResult
 import sys
 
-class _Context(object):
-    __slots__ = ['hub', 'greenlets', 'blocked_greenlets', 'scheduler', '_scheduled_callback']
-
+class _DebugContext(object):
+    """A version of the context that keeps the actual greenlets around instead
+    of just counting how many are runnable."""
     def __init__(self, scheduler_class=None):
         self.hub = get_hub()
         self.greenlets = set()
         self.blocked_greenlets = set()
 
         if scheduler_class is None:
-            from .scheduler import AllAtOnceScheduler
             scheduler_class = AllAtOnceScheduler
         self.scheduler = scheduler_class()
 
         self._scheduled_callback = None
 
     def greenlet_created(self, g):
+        assert g not in self.greenlets
         self.greenlets.add(g)
         self.blocked_greenlets.add(g)
 
@@ -31,9 +31,9 @@ class _Context(object):
     def greenlet_unblocked(self, g):
         assert g in self.blocked_greenlets
         self.blocked_greenlets.remove(g)
-        self.schedule_to_run()
 
     def greenlet_finished(self, g):
+        assert g in self.greenlets
         assert g not in self.blocked_greenlets
         self.greenlets.remove(g)
         self.schedule_to_run()
@@ -49,6 +49,53 @@ class _Context(object):
             return
 
         if len(self.blocked_greenlets) == len(self.greenlets) and self.scheduler.has_work():
+            self.scheduler.run_next()
+
+    def schedule_to_run(self):
+        if self._scheduled_callback:
+            return
+        self._scheduled_callback = self.hub.loop.run_callback(self._maybe_run_scheduler)
+
+
+class _Context(object):
+    __slots__ = ['hub', 'num_greenlets', 'num_blocked', 'scheduler', '_scheduled_callback']
+
+    def __init__(self, scheduler_class=None):
+        self.hub = get_hub()
+        self.num_greenlets = 0
+        self.num_blocked = 0
+        self._scheduled_callback = None
+
+        if scheduler_class is None:
+            scheduler_class = AllAtOnceScheduler
+        self.scheduler = scheduler_class()
+
+    def greenlet_created(self, g):
+        self.num_greenlets += 1
+        self.num_blocked += 1
+
+    def greenlet_blocked(self, g):
+        self.num_blocked += 1
+        self.schedule_to_run()
+
+    def greenlet_unblocked(self, g):
+        self.num_blocked -= 1
+
+    def greenlet_finished(self, g):
+        self.num_greenlets -= 1
+        self.schedule_to_run()
+
+    def _maybe_run_scheduler(self):
+        self._scheduled_callback = None
+
+        if self.num_greenlets == 0 and not self.scheduler.has_work():
+            # Reset to stop refcycles as well as break anyone who is doing something bad.
+            self.num_greenlets = None
+            self.num_blocked = None
+            self.scheduler = None
+            return
+
+        if self.num_greenlets == self.num_blocked and self.scheduler.has_work():
             self.scheduler.run_next()
 
     def schedule_to_run(self):
@@ -260,3 +307,6 @@ def batch_context(fn):
         else:
             return fn(*args, **kwargs)
     return wrapper
+
+# TODO: Fix this.
+from .scheduler import AllAtOnceScheduler

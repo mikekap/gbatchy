@@ -1,7 +1,5 @@
 import sys
 
-from .context import spawn
-
 class Scheduler(object):
     __slots__ = []
 
@@ -67,3 +65,6 @@ class Raise(object):
     This may be useful if you want to throw only for some of the batched cases."""
     def __init__(self, *exc_info):
         self.exc_info = exc_info
+
+# TODO: Fix this.
+from .context import spawn

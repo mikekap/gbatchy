@@ -76,14 +76,18 @@ class _Context(object):
 
     def greenlet_blocked(self, g):
         self.num_blocked += 1
-        self.schedule_to_run()
+
+        if not self._scheduled_callback:
+            self._scheduled_callback = self.hub.loop.run_callback(self._maybe_run_scheduler)
 
     def greenlet_unblocked(self, g):
         self.num_blocked -= 1
 
     def greenlet_finished(self, g):
         self.num_greenlets -= 1
-        self.schedule_to_run()
+
+        if not self._scheduled_callback:
+            self._scheduled_callback = self.hub.loop.run_callback(self._maybe_run_scheduler)
 
     def _maybe_run_scheduler(self):
         self._scheduled_callback = None
@@ -99,9 +103,8 @@ class _Context(object):
             self.scheduler.run_next()
 
     def schedule_to_run(self):
-        if self._scheduled_callback:
-            return
-        self._scheduled_callback = self.hub.loop.run_callback(self._maybe_run_scheduler)
+        if not self._scheduled_callback:
+            self._scheduled_callback = self.hub.loop.run_callback(self._maybe_run_scheduler)
 
 
 CONTEXT_FACTORY = _Context
@@ -136,12 +139,13 @@ class BatchGreenlet(_GeventGreenlet):
             self._run = wrapper(self._run)
 
     def _notify_links(self):
-        links, self._links = self._links, []
+        links = self._links
         for link in links:
             try:
                 link(self)
             except:
                 self.hub.handle_error((link, self), *sys.exc_info())
+        del self._links[:]
 
     def awaiting_batch(self):
         assert not self.is_blocked
@@ -227,12 +231,13 @@ class BatchAsyncResult(_GeventAsyncResult):
         self._links = []
 
     def _notify_links(self):
-        links, self._links = self._links, []
+        links = self._links
         for link in links:
             try:
                 link(self)
             except:
                 self.hub.handle_error((link, self), *sys.exc_info())
+        del self._links[:]
 
     def _get(self):
         if self._exception is None:

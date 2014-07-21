@@ -89,14 +89,12 @@ class BatchGreenlet(_GeventGreenlet):
             self._run = wrapper(self._run)
 
     def _notify_links(self):
-        try:
-            for link in self._links:
-                try:
-                    link(self)
-                except:
-                    self.parent.handle_error((link, self), *sys.exc_info())
-        finally:
-            self._links = []
+        links, self._links = self._links, []
+        for link in links:
+            try:
+                link(self)
+            except:
+                self.hub.handle_error((link, self), *sys.exc_info())
 
     def awaiting_batch(self):
         assert not self.is_blocked
@@ -182,14 +180,12 @@ class BatchAsyncResult(_GeventAsyncResult):
         self._links = []
 
     def _notify_links(self):
-        try:
-            for link in self._links:
-                try:
-                    link(self)
-                except:
-                    self.hub.handle_error((link, self), *sys.exc_info())
-        finally:
-            self._links = []
+        links, self._links = self._links, []
+        for link in links:
+            try:
+                link(self)
+            except:
+                self.hub.handle_error((link, self), *sys.exc_info())
 
     def _get(self):
         if self._exception is None:

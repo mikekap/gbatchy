@@ -58,7 +58,7 @@ class BatchRedisClient(object):
             rv = pipeline.execute()
             results = []
             start = 0
-            for call_list in args_list:
+            for call_list, in args_list:
                 results.append(rv[start:start+len(call_list)])
                 start += len(call_list)
             return results

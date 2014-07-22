@@ -47,9 +47,13 @@ class RedisClientTests(TestCase):
             with self.client.pipeline() as p:
                 p.set(self.key_prefix + 'yes', '1')
                 p.set(self.key_prefix + 'yes', '2')
+                p.get(self.key_prefix + 'yes')
 
                 self.assertIsNone(self.client.get(self.key_prefix + 'yes'))
-                p.execute()
+                s1, s2, g = p.execute()
                 self.assertEquals('2', self.client.get(self.key_prefix + 'yes'))
+                self.assertEquals(1, s1)
+                self.assertEquals(1, s2)
+                self.assertEquals('2', g)
 
         test()

@@ -1,13 +1,11 @@
 from functools import wraps, partial
 
-from .context import get_context, BatchAsyncResult, batch_context
+from .context import get_context, batch_context
 
 @batch_context
 def _batch_wait(fn_id, fn, args):
-    global get_context, BatchAsyncResult
-    r = BatchAsyncResult()
-    get_context().scheduler.add_pending_batch(fn_id, fn, args, r)
-    return r.get()
+    global get_context
+    return get_context().scheduler.run_pending_batch(fn_id, fn, args)
 
 
 def batched(accepts_kwargs=True):

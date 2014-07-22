@@ -191,19 +191,15 @@ class BatchGreenlet(_GeventGreenlet):
         else:
             raise self._exception
 
-    def get(self, block=True, timeout=None):
+    def get(self, block=True):
         if block:
             if not self.ready():
                 switch = getcurrent().switch
                 self.rawlink(switch)
                 try:
-                    t = Timeout.start_new(timeout)
-                    try:
-                        getattr(getcurrent(), 'awaiting_batch', lambda: None)()
-                        result = self.parent.switch()
-                        assert result is self, 'Invalid switch into Greenlet.join(): %r' % (result, )
-                    finally:
-                        t.cancel()
+                    getattr(getcurrent(), 'awaiting_batch', lambda: None)()
+                    result = self.parent.switch()
+                    assert result is self, 'Invalid switch into Greenlet.join(): %r' % (result, )
                 except:
                     self.unlink(switch)
                     raise
@@ -239,14 +235,18 @@ class BatchGreenlet(_GeventGreenlet):
             raise
 
 
-class BatchAsyncResult(_GeventAsyncResult):
+class BatchAsyncResult(object):
     """A slight wrapper around AsyncResult that notifies the greenlet that it's waiting for a batch result."""
 
-    def __init__(self, *args, **kwargs):
-        super(BatchAsyncResult, self).__init__(*args, **kwargs)
+    __slots__ = ['_ready', '_exc_info', 'exception', 'value', '_links', '_notifier']
 
+    def __init__(self):
+        self._ready = False
         self._exc_info = None
+        self.value = None
+        self.exception = None
         self._links = []
+        self._notifier = None
 
     def _notify_links(self):
         links = self._links
@@ -254,37 +254,58 @@ class BatchAsyncResult(_GeventAsyncResult):
             try:
                 link(self)
             except:
-                self.hub.handle_error((link, self), *sys.exc_info())
+                get_hub().handle_error((link, self), *sys.exc_info())
         del self._links[:]
+
+    def set(self, value):
+        self.value = value
+        self._ready = True
+
+        if self._links and not self._notifier:
+            self._notifier = get_hub().loop.run_callback(self._notify_links)
 
     def set_exc_info(self, exc_info):
         self._exc_info = exc_info
+        self.exception = exc_info[0]
         _add_exc_info_object(self)
-        self.set_exception(exc_info[0])
+        self._ready = True
+
+        if self._links and not self._notifier:
+            self._notifier = get_hub().loop.run_callback(self._notify_links)
+
+    def set_exception(self, exc):
+        self.exception = exc
+        self._ready = True
+
+        if self._links and not self._notifier:
+            self._notifier = get_hub().loop.run_callback(self._notify_links)
+
+    def successful(self):
+        """Return true if and only if it is ready and holds a value"""
+        return self._ready and self._exception is None
+
+    def ready(self):
+        return self._ready
 
     def _get(self):
-        if self._exception is None:
+        if self.exception is None:
             return self.value
         elif self._exc_info:
             (cls, val, tb), self._exc_info = self._exc_info, None
             _remove_exc_info_object(self)
             raise cls, val, tb
         else:
-            raise self._exception
+            raise self.exception
 
-    def get(self, block=True, timeout=None):
+    def get(self, block=True):
         if block:
-            if not self.ready():
+            if not self._ready:
                 switch = getcurrent().switch
-                self.rawlink(switch)
+                self._links.append(switch)
                 try:
-                    timer = Timeout.start_new(timeout)
-                    try:
-                        getattr(getcurrent(), 'awaiting_batch', lambda: None)()
-                        result = self.hub.switch()
-                        assert result is self, 'Invalid switch into AsyncResult.wait(): %r' % (result, )
-                    finally:
-                        timer.cancel()
+                    getattr(getcurrent(), 'awaiting_batch', lambda: None)()
+                    result = get_hub().switch()
+                    assert result is self, 'Invalid switch into AsyncResult.wait(): %r' % (result, )
                 except:
                     self.unlink(switch)
                     raise
@@ -320,6 +341,31 @@ class BatchAsyncResult(_GeventAsyncResult):
             # finished normally, link was already removed in _notify_links
         return self.value
 
+    def rawlink(self, callback):
+        """Register a callback to call when a value or an exception is set.
+
+        *callback* will be called in the :class:`Hub <gevent.hub.Hub>`, so it must not use blocking gevent API.
+        *callback* will be passed one argument: this instance.
+        """
+        if not callable(callback):
+            raise TypeError('Expected callable: %r' % (callback, ))
+        self._links.append(callback)
+        if self._ready and not self._notifier:
+            self._notifier = get_hub().loop.run_callback(self._notify_links)
+
+    def unlink(self, callback):
+        """Remove the callback set by :meth:`rawlink`"""
+        try:
+            self._links.remove(callback)
+        except ValueError:
+            pass
+
+    # link protocol
+    def __call__(self, source):
+        if source.successful():
+            self.set(source.value)
+        else:
+            self.set_exception(source.exception)
 
 spawn = BatchGreenlet.spawn
 

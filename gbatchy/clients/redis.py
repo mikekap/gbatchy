@@ -41,13 +41,27 @@ class BatchRedisClient(object):
 
             return pipeline.execute()
 
-    @class_batched()
-    def _silent_batch_call(self, args_list):
-        with self.redis.pipeline(silent_failure=True) as pipeline:
-            for args, kwargs in args_list:
-                getattr(pipeline, args[0])(*args[1:], **kwargs)
+    @class_batched(accepts_kwargs=False)
+    def _pipeline_call(self, args_list):
+        return self._pipeline_call_impl(args_list)
 
-            return pipeline.execute()
+    @class_batched(accepts_kwargs=False)
+    def _silent_pipeline_call(self, args_list):
+        return self._pipeline_call_impl(args_list, silent_failure=True)
+
+    def _pipeline_call_impl(self, args_list, **kwargs):
+        with self.redis.pipeline(**kwargs) as pipeline:
+            for calls, in args_list:
+                for args, kwargs in calls:
+                    getattr(pipeline, args[0])(*args[1:], **kwargs)
+
+            rv = pipeline.execute()
+            results = []
+            start = 0
+            for call_list in args_list:
+                results.append(rv[start:start+len(call_list)])
+                start += len(call_list)
+            return results
 
 
 class BatchRedisPipeline(object):
@@ -74,8 +88,8 @@ class BatchRedisPipeline(object):
     def execute(self):
         try:
             if self._silent_failure:
-                return pget(spawn(self.redis._silent_batch_call, *a, **kw) for a, kw in self._batch_calls)
+                return self.redis._silent_pipeline_call(self._batch_calls)
             else:
-                return pget(spawn(self.redis._batch_call, *a, **kw) for a, kw in self._batch_calls)
+                return self.redis._pipeline_call(self._batch_calls)
         finally:
             self._batch_calls = []

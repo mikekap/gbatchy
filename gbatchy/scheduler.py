@@ -3,7 +3,7 @@ import sys
 class Scheduler(object):
     __slots__ = []
 
-    def add_pending_batch(self, id_, function, args_tuple, aresult):
+    def run_pending_batch(self, id_, function, args_tuple):
         raise NotImplementedError()
 
     def run_next(self):
@@ -12,27 +12,20 @@ class Scheduler(object):
     def has_work(self):
         raise NotImplementedError()
 
-    def run_batch_fn(self, fn, args, aresults):
+    def run_batch_fn(self, fn, args, aresult):
         try:
             result = fn(args)
 
             if result is None:
-                result = [None] * len(aresults)
+                result = [None] * len(args)
 
-            if len(result) != len(aresults):
+            if len(result) != len(args):
                 raise ValueError('Batch function %s did not return enough results (needed %d got %d)' % (
-                    fn, len(aresults), len(result)))
+                    fn, len(args), len(result)))
         except Exception:
-            result = [Raise(*sys.exc_info())] * len(aresults)
+            result = [Raise(*sys.exc_info())] * len(args)
 
-        for ar, r in zip(aresults, result):
-            if isinstance(r, Raise):
-                if len(r.exc_info) == 3:
-                    ar.set_exc_info(r.exc_info)
-                else:
-                    ar.set_exception(r.exc_info[0])
-            else:
-                ar.set(r)
+        aresult.set(result)
 
 class AllAtOnceScheduler(Scheduler):
     __slots__ = ['pending_batches']
@@ -40,13 +33,25 @@ class AllAtOnceScheduler(Scheduler):
     def __init__(self):
         self.pending_batches = {}  # {id: (function, [(args, kwargs), ...], [result, result, ...])}
 
-    def add_pending_batch(self, id_, function, args_tuple, aresult):
+    def run_pending_batch(self, id_, function, args_tuple):
         if id_ not in self.pending_batches:
-            self.pending_batches[id_] = (function, [args_tuple], [aresult])
+            aresult = BatchAsyncResult()
+            arg_list = [args_tuple]
+            self.pending_batches[id_] = (function, arg_list, aresult)
         else:
-            _, arg_list, aresults = self.pending_batches[id_]
+            _, arg_list, aresult = self.pending_batches[id_]
             arg_list.append(args_tuple)
-            aresults.append(aresult)
+
+        index = len(arg_list) - 1
+        r = aresult.get()[index]
+        if isinstance(r, Raise):
+            if len(r.exc_info) == 3:
+                exc, v, tb = r.exc_info
+                raise exc, v, tb
+            else:
+                raise r.exc_info[0]
+        else:
+            return r
 
     def has_work(self):
         return bool(self.pending_batches)
@@ -54,8 +59,8 @@ class AllAtOnceScheduler(Scheduler):
     def run_next(self):
         assert self.pending_batches
 
-        for function, args, aresults in self.pending_batches.itervalues():
-            spawn(self.run_batch_fn, function, args, aresults)
+        for function, args, aresult in self.pending_batches.itervalues():
+            spawn(self.run_batch_fn, function, args, aresult)
         self.pending_batches.clear()
 
 
@@ -67,4 +72,4 @@ class Raise(object):
         self.exc_info = exc_info
 
 # TODO: Fix this.
-from .context import spawn
+from .context import spawn, BatchAsyncResult

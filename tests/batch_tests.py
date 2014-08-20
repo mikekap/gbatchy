@@ -24,14 +24,22 @@ class BatchTests(TestCase):
             N_CALLS[0] += 1
             gevent.sleep(0.01)
 
+        @batch_context
         def test():
             g1 = spawn(fn, 1)
             g2 = spawn(fn, 2)
             g1.get()
             g2.get()
-            return N_CALLS[0]
+            self.assertEquals(1, N_CALLS[0])
 
-        self.assertEquals(1, spawn(test).get())
+            g1, g2 = fn(1, as_future=True), fn(2, as_future=True)
+            g1.wait()
+            g2.wait()
+            g1.get()
+            g2.get()
+            self.assertEquals(2, N_CALLS[0])
+
+        test()
 
     def test_batched_raise(self):
         N_CALLS = [0]
@@ -43,6 +51,10 @@ class BatchTests(TestCase):
         @batch_context
         def test():
             a, b = spawn(fn, 1), spawn(fn, 2)
+            self.assertEquals(2, b.get())
+            self.assertRaises(ValueError, a.get)
+
+            a, b = fn(1, as_future=True), fn(2, as_future=True)
             self.assertEquals(2, b.get())
             self.assertRaises(ValueError, a.get)
 

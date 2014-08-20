@@ -1,8 +1,6 @@
 from functools import partial
 
 from ..batch import class_batched
-from ..context import spawn
-from ..utils import pget
 
 class BatchRedisClient(object):
     def __init__(self, redis_client):

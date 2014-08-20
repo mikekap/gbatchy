@@ -1,8 +1,12 @@
 from collections import OrderedDict
 from functools import wraps
 from gevent import Greenlet as _GeventGreenlet, getcurrent, Timeout, get_hub
-from gevent.event import AsyncResult as _GeventAsyncResult
 import sys
+
+DEFAULT_SCHEDULER = None
+def set_default_scheduler(cls):
+    global DEFAULT_SCHEDULER
+    DEFAULT_SCHEDULER = cls
 
 class _DebugContext(object):
     """A version of the context that keeps the actual greenlets around instead
@@ -11,10 +15,7 @@ class _DebugContext(object):
         self.hub = get_hub()
         self.greenlets = set()
         self.blocked_greenlets = set()
-
-        if scheduler_class is None:
-            scheduler_class = AllAtOnceScheduler
-        self.scheduler = scheduler_class()
+        self.scheduler = (scheduler_class or DEFAULT_SCHEDULER)()
 
         self._scheduled_callback = None
 
@@ -67,9 +68,7 @@ class _Context(object):
         self.num_blocked = 0
         self._scheduled_callback = None
 
-        if scheduler_class is None:
-            scheduler_class = AllAtOnceScheduler
-        self.scheduler = scheduler_class()
+        self.scheduler = (scheduler_class or DEFAULT_SCHEDULER)()
 
     def greenlet_created(self, g):
         self.num_greenlets += 1
@@ -110,7 +109,6 @@ class _Context(object):
 
 CONTEXT_FACTORY = _Context
 def get_context():
-    global getcurrent
     return getattr(getcurrent(), 'context', None)
 
 
@@ -118,7 +116,6 @@ AUTO_WRAPPERS = []
 def add_auto_wrapper(fn):
     """Adds decorator fn that wraps every function that gets called in a BatchGreenlet.
     This might be useful to e.g. propagate context."""
-    global AUTO_WRAPPERS
     AUTO_WRAPPERS.append(fn)
 
 # We store a list of all the greenlets/other objects that are storing exc_info so we can limit the set of
@@ -126,20 +123,19 @@ def add_auto_wrapper(fn):
 MAX_EXC_INFOS = 10
 _EXC_INFO_LIST = OrderedDict()
 
-def _add_exc_info_object(obj):
-    global _EXC_INFO_LIST, MAX_EXC_INFOS
+def add_exc_info_container(obj):
     if len(_EXC_INFO_LIST) >= MAX_EXC_INFOS:
         _EXC_INFO_LIST.popitem(last=True)[0]._exc_info = None
     _EXC_INFO_LIST[obj] = True
 
-def _remove_exc_info_object(obj):
-    global _EXC_INFO_LIST
+def raise_exc_info_from_container(obj):
     _EXC_INFO_LIST.pop(obj, None)
+    (cls, val, tb), obj._exc_info = obj._exc_info, None
+    raise cls, val, tb
 
 
 class BatchGreenlet(_GeventGreenlet):
     def __init__(self, *args, **kwargs):
-        global AUTO_WRAPPERS
         super(BatchGreenlet, self).__init__(*args, **kwargs)
 
         self._links = []  # override the greenlet-native _links to use a list, which is faster for small numbers of links.
@@ -178,16 +174,14 @@ class BatchGreenlet(_GeventGreenlet):
     def _report_error(self, exc_info):
         """Overridden to add the traceback."""
         self._exc_info = exc_info
-        _add_exc_info_object(self)
+        add_exc_info_container(self)
         super(BatchGreenlet, self)._report_error(exc_info)
 
     def _get(self):
         if self._exception is None:
             return self.value
         elif self._exc_info:
-            (cls, val, tb), self._exc_info = self._exc_info, None
-            _remove_exc_info_object(self)
-            raise cls, val, tb
+            raise_exc_info_from_container(self)
         else:
             raise self._exception
 
@@ -234,6 +228,8 @@ class BatchGreenlet(_GeventGreenlet):
             self.unlink(switch)
             raise
 
+    wait = join  # Compat with AsyncResult.
+
 
 class BatchAsyncResult(object):
     """A slight wrapper around AsyncResult that notifies the greenlet that it's waiting for a batch result."""
@@ -266,8 +262,8 @@ class BatchAsyncResult(object):
 
     def set_exc_info(self, exc_info):
         self._exc_info = exc_info
-        self.exception = exc_info[0]
-        _add_exc_info_object(self)
+        self.exception = exc_info[1]
+        add_exc_info_container(self)
         self._ready = True
 
         if self._links and not self._notifier:
@@ -282,7 +278,7 @@ class BatchAsyncResult(object):
 
     def successful(self):
         """Return true if and only if it is ready and holds a value"""
-        return self._ready and self._exception is None
+        return self._ready and self.exception is None
 
     def ready(self):
         return self._ready
@@ -291,13 +287,16 @@ class BatchAsyncResult(object):
         if self.exception is None:
             return self.value
         elif self._exc_info:
-            (cls, val, tb), self._exc_info = self._exc_info, None
-            _remove_exc_info_object(self)
-            raise cls, val, tb
+            raise_exc_info_from_container(self)
         else:
             raise self.exception
 
-    def get(self, block=True):
+    def get(self, block=True, timeout=None):
+        if timeout is not None:
+            self.wait(timeout=timeout)
+            if not self._ready:
+                raise Timeout()
+
         if block:
             if not self._ready:
                 switch = getcurrent().switch
@@ -316,6 +315,9 @@ class BatchAsyncResult(object):
         else:
             raise Timeout()
 
+    def get_nowait(self):
+        return self.get(block=False)
+
     def wait(self, timeout=None):
         if self.ready():
             return self.value
@@ -323,13 +325,14 @@ class BatchAsyncResult(object):
             switch = getcurrent().switch
             self.rawlink(switch)
             try:
-                timer = Timeout.start_new(timeout)
+                timer = Timeout.start_new(timeout) if timeout is not None else None
                 try:
                     getattr(getcurrent(), 'awaiting_batch', lambda: None)()
-                    result = self.hub.switch()
+                    result = get_hub().switch()
                     assert result is self, 'Invalid switch into AsyncResult.wait(): %r' % (result, )
                 finally:
-                    timer.cancel()
+                    if timer is not None:
+                        timer.cancel()
             except Timeout as exc:
                 self.unlink(switch)
                 if exc is not timer:
@@ -372,12 +375,8 @@ spawn = BatchGreenlet.spawn
 def batch_context(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        global getcurrent
         if getattr(getcurrent(), 'context', None) is None:
             return spawn(fn, *args, **kwargs).get()
         else:
             return fn(*args, **kwargs)
     return wrapper
-
-# TODO: Fix this.
-from .scheduler import AllAtOnceScheduler

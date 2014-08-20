@@ -1,4 +1,6 @@
 import sys
+from .context import spawn, BatchAsyncResult
+from .utils import transform
 
 class Scheduler(object):
     __slots__ = []
@@ -43,15 +45,19 @@ class AllAtOnceScheduler(Scheduler):
             arg_list.append(args_tuple)
 
         index = len(arg_list) - 1
-        r = aresult.get()[index]
-        if isinstance(r, Raise):
-            if len(r.exc_info) == 3:
-                exc, v, tb = r.exc_info
-                raise exc, v, tb
+
+        def result_transform(result):
+            r = result[index]
+            if isinstance(r, Raise):
+                if len(r.exc_info) == 3:
+                    exc, v, tb = r.exc_info
+                    raise exc, v, tb
+                else:
+                    raise r.exc_info[0]
             else:
-                raise r.exc_info[0]
-        else:
-            return r
+                return r
+
+        return transform(aresult, result_transform)
 
     def has_work(self):
         return bool(self.pending_batches)
@@ -70,6 +76,3 @@ class Raise(object):
     This may be useful if you want to throw only for some of the batched cases."""
     def __init__(self, *exc_info):
         self.exc_info = exc_info
-
-# TODO: Fix this.
-from .context import spawn, BatchAsyncResult

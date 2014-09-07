@@ -5,7 +5,7 @@ from .utils import transform
 class Scheduler(object):
     __slots__ = []
 
-    def run_pending_batch(self, id_, function, args_tuple):
+    def run_pending_batch(self, id_, function, args_tuple, **kwargs):
         raise NotImplementedError()
 
     def run_next(self):
@@ -35,7 +35,7 @@ class AllAtOnceScheduler(Scheduler):
     def __init__(self):
         self.pending_batches = {}  # {id: (function, [(args, kwargs), ...], [result, result, ...])}
 
-    def run_pending_batch(self, id_, function, args_tuple):
+    def run_pending_batch(self, id_, function, args_tuple, max_size=sys.maxint):
         if id_ not in self.pending_batches:
             aresult = BatchAsyncResult()
             arg_list = [args_tuple]
@@ -45,6 +45,10 @@ class AllAtOnceScheduler(Scheduler):
             arg_list.append(args_tuple)
 
         index = len(arg_list) - 1
+
+        if index >= max_size - 1:
+            self.pending_batches.pop(id_)
+            spawn(self.run_batch_fn, function, arg_list, aresult)
 
         def result_transform(result):
             r = result[index]

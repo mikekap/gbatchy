@@ -41,6 +41,22 @@ class BatchTests(TestCase):
 
         test()
 
+    def test_batch_max_works(self):
+        N_CALLS = [0]
+        @batched(max_size=1)
+        def fn(arg_list):
+            N_CALLS[0] += 1
+
+        @batch_context
+        def test():
+            g1 = spawn(fn, 1)
+            g2 = spawn(fn, 2)
+            g1.get()
+            g2.get()
+            self.assertEquals(2, N_CALLS[0])
+
+        test()
+
     def test_batched_raise(self):
         N_CALLS = [0]
         @batched(accepts_kwargs=False)

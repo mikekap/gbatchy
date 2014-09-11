@@ -168,14 +168,16 @@ class BatchTests(TestCase):
         test()  # shouldn't hang.
 
     def test_utils(self):
-        def add_1(i):
-            return i + 1
+        def add_n(i, n=1):
+            return i + n
 
         def only_even(i):
             return i % 2 == 0
 
-        self.assertEquals([2,3,4], pmap(add_1, [1,2,3]))
+        self.assertEquals([2,3,4], pmap(add_n, [1,2,3]))
+        self.assertEquals([3,4,5], pmap(add_n, [1,2,3], n=2))
         self.assertEquals([2], pfilter(only_even, [1,2,3]))
 
-        self.assertEquals([2,3,4], sorted(pmap_unordered(add_1, [1,2,3])))
+        self.assertEquals([2,3,4], sorted(pmap_unordered(add_n, [1,2,3])))
+        self.assertEquals([3,4,5], sorted(pmap_unordered(add_n, [1,2,3], n=2)))
         self.assertEquals([2], list(pfilter_unordered(only_even, [1,2,3])))

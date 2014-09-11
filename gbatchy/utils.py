@@ -13,25 +13,25 @@ def pget(lst):
     return [x.get() for x in lst]
 
 @batch_context
-def pmap(fn, items):
-    return pget(spawn(fn, i) for i in items)
+def pmap(fn, items, **kwargs):
+    return pget(spawn(fn, i, **kwargs) for i in items)
 
 @batch_context
-def pmap_unordered(fn, items):
+def pmap_unordered(fn, items, **kwargs):
     """Same as the above, but returns an unordered generator that returns items as they finish."""
-    return (r.get() for r in iwait([spawn(fn, i) for i in items]))
+    return (r.get() for r in iwait([spawn(fn, i, **kwargs) for i in items]))
 
 @batch_context
-def pfilter(fn, items):
-    items = [(spawn(fn, i), i) for i in items]
+def pfilter(fn, items, **kwargs):
+    items = [(spawn(fn, i, **kwargs), i) for i in items]
     for g, _ in items:
         g.join()
     return [i for r, i in items if r.get()]
 
 @batch_context
-def pfilter_unordered(fn, items):
+def pfilter_unordered(fn, items, **kwargs):
     """Same as the above, but returns an unordered generator that returns items as they finish."""
-    return (r.get()[1] for r in iwait([spawn(lambda i: (fn(i), i), i) for i in items]) if r.get()[0])
+    return (r.get()[1] for r in iwait([spawn(lambda i: (fn(i, **kwargs), i), i) for i in items]) if r.get()[0])
 
 def immediate(value):
     """Returns an AsyncResult-like object that is immediately ready and returns value."""

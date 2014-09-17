@@ -1,5 +1,5 @@
-from functools import partial
 from gevent import iwait
+from peak.util.proxies import LazyProxy
 import sys
 
 from .context import batch_context, spawn, add_exc_info_container, raise_exc_info_from_container
@@ -48,6 +48,14 @@ def transform(pending, transformer):
     you do want to spawn/wait for other greenlets, just use spawn() and .get(). This is
     meant to be a highly efficient wrapper, for use in, e.g. batch operations."""
     return _TransformedResult(pending, transformer)
+
+def spawn_proxy(*args, **kwargs):
+    """Same as spawn(), but returns a proxy type that implicitly uses the value of
+    spawn(*args, **kwargs).get().
+
+    This may be useful to get rid of .get() calls all over your code.
+    """
+    return LazyProxy(spawn(*args, **kwargs).get)
 
 class _ImmediateResult(object):
     __slots__ = ('value', 'exception', '_exc_info')

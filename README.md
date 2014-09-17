@@ -50,9 +50,10 @@ Mini docs:
 
  - `@batch_context`: Ensures that the function is running in a batch context (i.e. all concurrent calls to `@batched` functions will be coalesced)
  - `spawn(fn, *args, **kwargs)`: start a new greenlet that will run `fn(*args, **kwargs)`. This creates a batch context or uses the current one.
+ - `spawn_proxy(fn, *args, **kwargs)`: same as spawn(), but returns a proxy type instead of a greenlet. This should help get rid of .get() around a lot of your code.
  - `@batched(accepts_kwargs=True)` and `@class_batched()`: marks this function as a batch function. All batch functions take just one arg: args_list: `[(args, kwargs), ...]` (or `[args, ...]` if `accepts_kwargs=False`)
  - `pget(iterable)`: a quick way to `.get()` all the arguments passed.
- - `pmap(fn, iterable)`: same as `map(fn, iterable)`, except runs in parallel.
+ - `pmap(fn, iterable)`: same as `map(fn, iterable)`, except runs in parallel. Note: keyword arguments to pmap are passed through to fn for each element.
  - `pfilter(fn, iterable)`: same as `filter(fn, iterable)` except runs in parallel.
  - `immediate(v)`: returns an `AsyncResult`-like object that is immediately ready and `immediate(v).get() is v`.
  - `immediate_exception(exc)`: same as `immediate`, but raises `exc`.

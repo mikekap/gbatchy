@@ -6,7 +6,7 @@ from gevent.lock import BoundedSemaphore
 from gbatchy.context import spawn, batch_context
 from gbatchy.batch import batched
 from gbatchy.scheduler import Raise
-from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered
+from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered, spawn_proxy
 
 class BatchTests(TestCase):
     def setUp(self):
@@ -181,3 +181,5 @@ class BatchTests(TestCase):
         self.assertEquals([2,3,4], sorted(pmap_unordered(add_n, [1,2,3])))
         self.assertEquals([3,4,5], sorted(pmap_unordered(add_n, [1,2,3], n=2)))
         self.assertEquals([2], list(pfilter_unordered(only_even, [1,2,3])))
+
+        self.assertEquals(2, spawn_proxy(add_n, 1))

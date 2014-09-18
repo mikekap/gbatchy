@@ -57,4 +57,4 @@ Mini docs:
  - `pfilter(fn, iterable)`: same as `filter(fn, iterable)` except runs in parallel.
  - `immediate(v)`: returns an `AsyncResult`-like object that is immediately ready and `immediate(v).get() is v`.
  - `immediate_exception(exc)`: same as `immediate`, but raises `exc`.
- - `transform(pending, fn)`: a somewhat low-level, but performant way to take an `AsyncResult`-like object and run `immediate(fn(pending.get()))`. Note that fn must be pure - it cannot interact with greenlets.
+ - `transform(pending, fn)`: a somewhat low-level, but performant way to take an `AsyncResult`-like object and run `immediate(fn(pending.get()))`. Note that fn must be pure - it cannot interact with greenlets. Any extra kwargs will be passed to `fn`.

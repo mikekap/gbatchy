@@ -3,10 +3,10 @@ from unittest import TestCase
 import gevent
 from gevent.lock import BoundedSemaphore
 
-from gbatchy.context import spawn, batch_context
+from gbatchy.context import spawn, batch_context, BatchAsyncResult
 from gbatchy.batch import batched
 from gbatchy.scheduler import Raise
-from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered, spawn_proxy
+from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered, spawn_proxy, transform, immediate
 
 class BatchTests(TestCase):
     def setUp(self):
@@ -54,6 +54,25 @@ class BatchTests(TestCase):
             g1.get()
             g2.get()
             self.assertEquals(2, N_CALLS[0])
+
+        test()
+
+    def test_batched_error(self):
+        N_CALLS = [0]
+        @batched(accepts_kwargs=False)
+        def fn(arg_list):
+            N_CALLS[0] += 1
+            raise ValueError()
+
+        @batch_context
+        def test():
+            a, b = spawn(fn, 1), spawn(fn, 2)
+            self.assertRaises(ValueError, b.get)
+            self.assertRaises(ValueError, a.get)
+
+            a, b = fn(1, as_future=True), fn(2, as_future=True)
+            self.assertRaises(ValueError, b.get)
+            self.assertRaises(ValueError, a.get)
 
         test()
 
@@ -183,3 +202,55 @@ class BatchTests(TestCase):
         self.assertEquals([2], list(pfilter_unordered(only_even, [1,2,3])))
 
         self.assertEquals(2, spawn_proxy(add_n, 1))
+
+    def _do_test_future(self, f, complete_it=None):
+        if complete_it is not None:
+            self.assertFalse(f.ready())
+            self.assertFalse(f.successful())
+            self.assertRaises(gevent.Timeout, f.get_nowait)
+            self.assertIsNone(f.wait(0.00001))
+
+            link_data = []
+            f.rawlink(lambda _: link_data.append(True))
+            complete_it()
+            gevent.sleep(0)
+            self.assertTrue(link_data)
+
+        self.assertTrue(f.ready())
+        self.assertTrue(f.successful())
+        f.wait()
+        f.get_nowait()
+        f.get()
+
+        link_data = []
+        f.rawlink(lambda _: link_data.append(True))
+        gevent.sleep(0)
+        self.assertTrue(link_data)
+        
+    def test_transform(self):
+        def multiply_by(value, m=3):
+            return value * m
+
+        future = BatchAsyncResult()
+        def finish_it():
+            future.set(2)
+
+        tfuture = transform(future, multiply_by, m=4)
+        self._do_test_future(tfuture, finish_it)
+        self.assertEquals(8, tfuture.get())
+
+    def test_transform_raise(self):
+        future = BatchAsyncResult()
+
+        future.set_exception(ValueError())
+        tfuture = transform(future, lambda: "NOT CALLED")
+        gevent.sleep(0)
+
+        self.assertTrue(tfuture.ready())
+        self.assertFalse(tfuture.successful())
+        self.assertRaises(ValueError, tfuture.get)
+
+    def test_immediate(self):
+        imm = immediate([1,2,3])
+        self._do_test_future(imm)
+        self.assertEquals([1,2,3], imm.get())

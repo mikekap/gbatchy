@@ -1,4 +1,4 @@
-from gevent import iwait
+from gevent import iwait, Timeout
 from peak.util.proxies import LazyProxy
 import sys
 
@@ -41,13 +41,13 @@ def immediate_exception(exception, exc_info=None):
     """Returns an AsyncResult-like object that is immediately ready and raises exception."""
     return _ImmediateResult(exception=exception, exc_info=exc_info)
 
-def transform(pending, transformer):
+def transform(pending, transformer, **kwargs):
     """Returns an AsyncResult-like that contains the result of transformer(pending.get()).
 
     Note that transformer will run on the hub greenlet, so it cannot spawn/.wait/.get. If
     you do want to spawn/wait for other greenlets, just use spawn() and .get(). This is
     meant to be a highly efficient wrapper, for use in, e.g. batch operations."""
-    return _TransformedResult(pending, transformer)
+    return _TransformedResult(pending, transformer, kwargs)
 
 def spawn_proxy(*args, **kwargs):
     """Same as spawn(), but returns a proxy type that implicitly uses the value of
@@ -71,7 +71,7 @@ class _ImmediateResult(object):
         return True
 
     def successful(self):
-        return self.exception is not None
+        return self.exception is None
 
     def set(self, value=None):
         raise NotImplementedError()
@@ -103,11 +103,12 @@ class _ImmediateResult(object):
         pass
 
 class _TransformedResult(object):
-    __slots__ = ('pending', 'value', 'transformer', '_exception', '_exc_info')
+    __slots__ = ('pending', 'value', 'transformer', 'kwargs', '_exception', '_exc_info')
 
-    def __init__(self, pending, transformer=None):
+    def __init__(self, pending, transformer=None, kwargs={}):
         self.pending = pending
         self.transformer = transformer
+        self.kwargs = kwargs
         self.value = None
         self._exception = None
         self._exc_info = None
@@ -122,7 +123,7 @@ class _TransformedResult(object):
 
         try:
             if pending.successful():
-                self.value = self.transformer(pending.get())
+                self.value = self.transformer(pending.get(), **self.kwargs)
             else:
                 assert pending.ready()
                 pending.get(block=False)
@@ -151,6 +152,9 @@ class _TransformedResult(object):
     def get(self, block=True, timeout=None):
         if block:
             self.pending.wait(timeout=timeout)
+
+        if self.value is None and not self.pending.ready():
+            raise Timeout()
 
         if self._exception is not None:
             if self._exc_info is not None:

@@ -2,6 +2,8 @@ gbatchy
 =======
 
 [![PyPI version](https://badge.fury.io/py/gbatchy.svg)](http://badge.fury.io/py/gbatchy)
+[![Build Status](https://travis-ci.org/mikekap/gbatchy.svg?branch=master)](https://travis-ci.org/mikekap/gbatchy)
+[![Coverage Status](https://coveralls.io/repos/mikekap/gbatchy/badge.png?branch=master)](https://coveralls.io/r/mikekap/gbatchy?branch=master)
 
 A small library inspired by batchy, but using gevent greenlets instead of yield to transfer control.
 

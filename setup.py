@@ -22,4 +22,11 @@ setup(
         'gevent>=1.0.1',
         'ProxyTypes>=0.9',
     ],
+    classifiers=[
+        'Development Status :: 4 - Beta',
+        'Intended Audience :: Developers',
+        'Operating System :: OS Independent',
+        'Programming Language :: Python',
+        'Topic :: Software Development :: Libraries',
+    ]
 )

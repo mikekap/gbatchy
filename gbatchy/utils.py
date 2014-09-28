@@ -1,5 +1,8 @@
 from gevent import iwait, Timeout
-from peak.util.proxies import LazyProxy
+try:
+    from peak.util.proxies import LazyProxy
+except ImportError:
+    from objproxies import LazyProxy
 import sys
 
 from .context import batch_context, spawn, add_exc_info_container, raise_exc_info_from_container

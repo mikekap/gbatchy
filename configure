@@ -1,0 +1,41 @@
+#!/bin/sh -e
+# this a self-bootstrapping script, it will create a virtualenv and install jinja2 in it
+# Credit goes to http://blog.ionelmc.ro/2014/05/25/python-packaging/?PageSpeed=noscript
+
+bogus=''' '
+if [ ! -e .bootstrap ]; then
+    virtualenv .bootstrap
+    .bootstrap/bin/pip install jinja2
+fi
+.bootstrap/bin/python $0 $*
+exit
+'''
+
+from jinja2 import FileSystemLoader, Environment
+jinja = Environment(loader=FileSystemLoader('.'), trim_blocks=True, lstrip_blocks=True)
+
+STANDARD_DEPS = ['gevent', 'ProxyTypes']
+PYPY_STANDARD_DEPS = ['https://github.com/surfly/gevent/archive/master.zip', 'ProxyTypes']
+# TODO: For some reason objproxies fails to install with tox.
+PY3_DEPS = list((set(STANDARD_DEPS) - {'ProxyTypes'}) | {'objproxies'})
+OPTIONAL_DEPS = ['redis', 'pylibmc']
+ENVS = {
+    'py2.7-smoke': {'python': 'python2.7', 'cover': False,
+                    'deps': STANDARD_DEPS, 'env': ''},
+#    'py3.4-smoke': {'python': 'python3.4', 'cover': False,
+#                    'deps': PY3_DEPS, 'env': ''},
+    'pypy-smoke': {'python': 'pypy', 'cover': False,
+                   'deps': PYPY_STANDARD_DEPS + ['redis'], 'env': ''},
+
+    'py2.7-cover': {'python': 'python2.7', 'cover': True,
+                    'deps': STANDARD_DEPS + OPTIONAL_DEPS, 'env': ''},
+#    'py3.4-cover': {'python': 'python3.4', 'cover': True,
+#                    'deps': PY3_DEPS + OPTIONAL_DEPS, 'env': ''},
+}
+
+with open('tox.ini', 'w') as fh:
+    fh.write(jinja.get_template('tox.tmpl.ini').render(envs=ENVS))
+
+with open('.travis.yml', 'w') as fh:
+    fh.write(jinja.get_template('.travis.tmpl.yml').render(envs=ENVS))
+

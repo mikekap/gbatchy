@@ -14,11 +14,23 @@ class BatchRedisClient(object):
         """.pipeline() is a pass-through."""
         return BatchRedisPipeline(self, *args, **kwargs)
 
-    def brpop(self, key, timeout=0):
-        return self.redis.brpop(key, timeout)
+    def brpop(self, *args, **kwargs):
+        return self.redis.brpop(*args, **kwargs)
 
-    def blpop(self, key, timeout=0):
-        return self.redis.blpop(key, timeout)
+    def blpop(self, *args, **kwargs):
+        return self.redis.blpop(*args, **kwargs)
+
+    def sscan(self, *args, **kwargs):
+        return self.redis.sscan(*args, **kwargs)
+
+    def hscan(self, *args, **kwargs):
+        return self.redis.hscan(*args, **kwargs)
+
+    def zscan(self, *args, **kwargs):
+        return self.redis.zscan(*args, **kwargs)
+
+    def scan(self, *args, **kwargs):
+        return self.redis.scan(*args, **kwargs)
 
     def flush(self):
         return self.redis.flush()

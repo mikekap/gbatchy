@@ -41,6 +41,22 @@ class RedisClientTests(TestCase):
 
         self.assertEquals(3, test())
 
+    def test_scan(self):
+        @batch_context
+        def do_thing(t, v):
+            k = self.key_prefix + 'hi' + t + '2'
+            self.client.sadd(k, v)
+            self.assertEquals([k], self.client.scan(match=self.key_prefix + 'hi' + t + '*', count=1000)[1])
+            self.assertEquals([v], self.client.sscan(k)[1])
+
+        @batch_context
+        def test():
+            a = spawn(do_thing, 'a', '1')
+            b = spawn(do_thing, 'b', '1')
+            a.get(), b.get()
+
+        test()
+
     def test_pipeline(self):
         @batch_context
         def test():

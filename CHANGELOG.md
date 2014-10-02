@@ -1,3 +1,6 @@
+## 0.3.1
+ - Fix redis *scan functions.
+
 ## 0.3
 Features:
  - A couple of useful utils: `immediate`, `immediate_exception`, and `transform`.

@@ -1,11 +1,27 @@
-from gevent import iwait, Timeout
+from collections import deque, OrderedDict
+from gevent import Timeout, iwait as _gevent_iwait, wait as _gevent_wait, pool as _gevent_pool, queue as _gevent_queue, sleep
 try:
     from peak.util.proxies import LazyProxy
 except ImportError:
     from objproxies import LazyProxy
 import sys
 
-from .context import batch_context, spawn, add_exc_info_container, raise_exc_info_from_container
+from .context import batch_context, spawn, add_exc_info_container, raise_exc_info_from_container, may_block, BatchGreenlet
+
+@batch_context
+def iwait(*args, **kwargs):
+    """Same as gevent.iwait, but works with BatchGreenlets."""
+    waiter = _gevent_iwait(*args, **kwargs)
+    while True:
+        with may_block():
+            v = next(waiter)
+        yield v
+
+@batch_context
+def wait(*args, **kwargs):
+    """Same as gevent.wait, but works with BatchGreenlets."""
+    with may_block():
+        return _gevent_wait(*args, **kwargs)
 
 @batch_context
 def pget(lst):
@@ -180,3 +196,133 @@ class _TransformedResult(object):
 
     def unlink(self):
         raise NotImplementedError()
+
+
+class Queue(_gevent_queue.Queue):
+    def put(self, *args, **kwargs):
+        with may_block():
+            return super(Queue, self).put(*args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        with may_block():
+            return super(Queue, self).get(*args, **kwargs)
+
+    def peek(self, *args, **kwargs):
+        with may_block():
+            return super(Queue, self).peek(*args, **kwargs)
+
+
+class Pool(_gevent_pool.Pool):
+    greenlet_class = BatchGreenlet
+
+    def join(self, *args, **kwargs):
+        with may_block():
+            return super(Pool, self).join(*args, **kwargs)
+
+    def kill(self, *args, **kwargs):
+        with may_block():
+            return super(Pool, self).kill(*args, **kwargs)
+
+    def killone(self, *args, **kwargs):
+        with may_block():
+            return super(Pool, self).kill(*args, **kwargs)
+
+    def add(self, greenlet):
+        with may_block():
+            return super(Pool, self).add(greenlet)
+
+    def wait_available(self):
+        with may_block():
+            return super(Pool, self).wait_available()
+
+    def apply_async(self, func, args=None, kwds=None, callback=None):
+        if args is None:
+            args = ()
+        if kwds is None:
+            kwds = {}
+        if self.full():
+            # cannot call spawn() directly because it will block
+            return self.greenlet_class.spawn(self.apply_cb, func, args, kwds, callback)
+        else:
+            greenlet = self.spawn(func, *args, **kwds)
+            if callback is not None:
+                greenlet.link(_gevent_pool.pass_value(callback))
+            return greenlet
+
+    def map_async(self, func, iterable, callback=None):
+        """
+        A variant of the map() method which returns a Greenlet object.
+
+        If callback is specified then it should be a callable which accepts a
+        single argument.
+        """
+        return self.greenlet_class.spawn(self.map_cb, func, iterable, callback)
+
+    def imap(self, func, iterable, **kwargs):
+        """An equivalent of itertools.imap()"""
+        iterable = iter(iterable)
+        queue = Queue(None)
+        def fill_queue():
+            try:
+                while True:
+                    try:
+                        v = next(iterable)
+                    except StopIteration:
+                        break
+                    else:
+                        queue.put(self.spawn(func, v, **kwargs))
+            finally:
+                queue.put(None)
+
+        filler = self.greenlet_class.spawn(fill_queue)
+
+        while True:
+            value = queue.get()
+            if value is None:
+                break
+
+            yield value.get()
+
+        filler.get()
+
+    def imap_unordered(self, func, iterable, **kwargs):
+        """The same as imap() except that the ordering of the results from the
+        returned iterator should be considered in arbitrary order."""
+        iterable = iter(iterable)
+        results_queue = Queue()
+        num_running = [0]
+
+        def fill_queue():
+            try:
+                while True:
+                    try:
+                        v = next(iterable)
+                    except StopIteration:
+                        break
+                    else:
+                        self.spawn(func, v, **kwargs).rawlink(results_queue.put)
+                        num_running[0] += 1
+            finally:
+                results_queue.put(None)
+
+        filler = self.greenlet_class.spawn(fill_queue)
+        num_running[0] += 1
+
+        while num_running[0]:
+            value = results_queue.get()
+            num_running[0] -= 1
+
+            if value is None:
+                continue
+
+            yield value.get()
+
+        filler.get()
+
+    pmap_unordered = imap_unordered
+
+    def pmap(self, *args, **kwargs):
+        return list(self.imap(*args, **kwargs))
+    map = pmap
+
+    

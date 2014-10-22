@@ -6,7 +6,7 @@ from gevent.lock import BoundedSemaphore
 from gbatchy.context import spawn, batch_context, BatchAsyncResult
 from gbatchy.batch import batched
 from gbatchy.scheduler import Raise
-from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered, spawn_proxy, transform, immediate
+from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered, spawn_proxy, transform, immediate, Pool
 
 class BatchTests(TestCase):
     def setUp(self):
@@ -187,21 +187,152 @@ class BatchTests(TestCase):
         test()  # shouldn't hang.
 
     def test_utils(self):
-        def add_n(i, n=1):
-            return i + n
+        @batched()
+        def add_n(args_list):
+            return [args[0] + kwargs.get('n', 1)
+                    for args, kwargs in args_list]
 
-        def only_even(i):
-            return i % 2 == 0
+        @batched(accepts_kwargs=False)
+        def only_even(args_list):
+            return [args[0] % 2 == 0 for args in args_list]
 
-        self.assertEquals([2,3,4], pmap(add_n, [1,2,3]))
-        self.assertEquals([3,4,5], pmap(add_n, [1,2,3], n=2))
-        self.assertEquals([2], pfilter(only_even, [1,2,3]))
+        @batch_context
+        def test():
+            self.assertEquals([2,3,4], pmap(add_n, [1,2,3]))
+            self.assertEquals([3,4,5], pmap(add_n, [1,2,3], n=2))
+            self.assertEquals([2], pfilter(only_even, [1,2,3]))
 
-        self.assertEquals([2,3,4], sorted(pmap_unordered(add_n, [1,2,3])))
-        self.assertEquals([3,4,5], sorted(pmap_unordered(add_n, [1,2,3], n=2)))
-        self.assertEquals([2], list(pfilter_unordered(only_even, [1,2,3])))
+            self.assertEquals([2,3,4], sorted(pmap_unordered(add_n, [1,2,3])))
+            self.assertEquals([3,4,5], sorted(pmap_unordered(add_n, [1,2,3], n=2)))
+            self.assertEquals([2], list(pfilter_unordered(only_even, [1,2,3])))
 
-        self.assertEquals(2, spawn_proxy(add_n, 1))
+            self.assertEquals(2, spawn_proxy(add_n, 1))
+
+        test()
+
+    def test_pool_spawn(self):
+        @batched()
+        def add_n(args_list):
+            return [args[0] + kwargs.get('n', 1)
+                    for args, kwargs in args_list]
+
+        @batch_context
+        def test():
+            p = Pool(1)
+            g = p.spawn(add_n, 1)
+            self.assertTrue(p.full())
+            p.wait_available()
+            self.assertFalse(p.full())
+            self.assertTrue(g.ready())
+            self.assertEquals(2, g.get())
+
+            g = p.spawn(add_n, 1)
+            self.assertTrue(p.full())
+            g2 = p.spawn(add_n, 2)
+            self.assertTrue(g.ready())
+            self.assertEquals(2, g.get())
+            self.assertEquals(3, g2.get())
+
+        test()
+
+    def test_pool_map(self):
+        @batched()
+        def add_n(args_list):
+            return [(args[0] + kwargs.get('n', 1), len(args_list))
+                    for args, kwargs in args_list]
+
+        @batch_context
+        def test():
+            p = Pool(1)
+            # batch fn called 3 times since the pool only allows one
+            # call at a time.
+            self.assertEquals([(2, 1),
+                               (3, 1),
+                               (4, 1)], p.pmap(add_n, [1,2,3]))
+
+            self.assertEquals([(2, 1),
+                               (3, 1),
+                               (4, 1)], sorted(p.pmap_unordered(add_n, [1,2,3])))
+
+            # Don't bother with imap since pmap == list(imap())
+
+        test()
+
+    def test_pool_imap_in_background(self):
+        NUM_BATCH_CALLS = [0]
+        @batched()
+        def add_n(args_list):
+            NUM_BATCH_CALLS[0] += 1
+
+            return [args[0] + kwargs.get('n', 1)
+                    for args, kwargs in args_list]
+
+        @batch_context
+        def test(fn):
+            NUM_BATCH_CALLS[0] = 0
+
+            p = Pool(1)
+            it = iter([1,2,3])
+            result_it = getattr(p, fn)(add_n, it, n=2)
+            results = []
+            # We need to call next() once so the generator runs.
+            results.append(next(result_it))
+            for _ in xrange(200):
+                # Wait for the pool to clear - even though we're not touching
+                # the result generator, imap should still continue queueing
+                # so long as the pool is empty.
+                gevent.sleep(0)
+                p.wait_available()
+                if NUM_BATCH_CALLS[0] == 3:
+                    break
+            self.assertEquals(3, NUM_BATCH_CALLS[0])
+            self.assertRaises(StopIteration, it.next)
+            results.extend(result_it)
+            self.assertEquals([3, 4, 5], sorted(results))
+
+        test('imap')
+        test('imap_unordered')
+
+    def test_imap_with_exception_in_iterator(self):
+        def gen():
+            yield 1
+            yield 2
+            yield 3
+            raise ValueError()
+
+        NUM_BATCH_CALLS = [0]
+        @batched()
+        def add_n(args_list):
+            NUM_BATCH_CALLS[0] += 1
+
+            return [args[0] + kwargs.get('n', 1)
+                    for args, kwargs in args_list]
+
+        def test(fn):
+            NUM_BATCH_CALLS[0] = 0
+
+            p = Pool(1)
+            it = gen()
+            result_it = getattr(p, fn)(add_n, it, n=2)
+            results = []
+            # We need to call next() once so the generator runs.
+            results.append(next(result_it))
+            for _ in xrange(200):
+                # Wait for the pool to clear - even though we're not touching
+                # the result generator, imap should still continue queueing
+                # so long as the pool is empty.
+                gevent.sleep(0)
+                p.wait_available()
+                if NUM_BATCH_CALLS[0] == 3:
+                    break
+            self.assertEquals(3, NUM_BATCH_CALLS[0])
+            results.append(next(result_it))
+            results.append(next(result_it))
+            self.assertRaises(ValueError, result_it.next)
+            self.assertEquals([3, 4, 5], sorted(results))
+
+        test('imap')
+        test('imap_unordered')
 
     def _do_test_future(self, f, complete_it=None):
         if complete_it is not None:

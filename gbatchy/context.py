@@ -1,7 +1,11 @@
 from collections import OrderedDict
+from contextlib import contextmanager
 from functools import wraps
-from gevent import Greenlet as _GeventGreenlet, getcurrent, Timeout, get_hub
+from gevent import Greenlet as _GeventGreenlet, getcurrent, Timeout, get_hub, iwait as _gevent_iwait
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SCHEDULER = None
 def set_default_scheduler(cls):
@@ -166,7 +170,7 @@ class BatchGreenlet(_GeventGreenlet):
 
     def switch(self, *args, **kwargs):
         if self.is_blocked:  # There are other reasons we may be switched into, e.g. gevent.sleep().
-                             # We want to ignore those (which is why we use awaiting_batch instead of switch_out).
+                             # We want to ignore those (which is why we use awaiting_batch instead of switch_out, unless may_block is used).
             self.is_blocked = False
             self.context.greenlet_unblocked(self)
         return super(BatchGreenlet, self).switch(*args, **kwargs)
@@ -229,6 +233,71 @@ class BatchGreenlet(_GeventGreenlet):
             raise
 
     wait = join  # Compat with AsyncResult.
+
+
+@contextmanager
+def may_block():
+    """A context manager where the operation may block waiting for another batch operation.
+
+    This usually happens when using gevent's primitives, e.g. iwait directly. You need to
+    wrap these operations in a `with may_block():`. For example, to use gevent.wait:
+
+    ```
+    def my_wait(objs, count=1):
+        with may_block():
+            return gevent.wait(objs, count=count)
+    ```
+
+    While under this context manager, ANY context switch out of this greenlet will be treated as a wait for a batch. For example, doing `with may_block(): gevent.sleep(1)` will cause queued @batched() functions to execute.
+
+    You should be careful while using generators & this context manager since the blocking behavior may leak out of the generator, e.g.
+
+    ```
+    def my_iwait(objs):
+        it = iwait(objs)
+
+        while True:
+            with may_block():
+                yield next(it)
+
+    for v in my_iwait([g1, g2, g3]):
+        gevent.sleep(0.1)
+    ```
+
+    would cause a batch flush during a gevent.sleep, which is probably not intentional. You should instead do:
+
+    ```
+    def my_iwait(objs):
+        it = iwait(objs)
+
+        while True:
+            with may_block():
+                v = next(it)
+            yield v
+
+    ```
+    """
+
+    current = getcurrent()
+    current_awaiting_batch = getattr(current, 'awaiting_batch', None)
+    if not current_awaiting_batch:
+        yield
+        return
+
+    original_switch_out = getattr(current, 'switch_out', None)
+    if original_switch_out is None:
+        def switch_out():
+            current.awaiting_batch()
+    else:
+        def switch_out():
+            current.awaiting_batch()
+            original_switch_out()
+
+    current.switch_out = switch_out
+    try:
+        yield
+    finally:
+        current.switch_out = original_switch_out
 
 
 class BatchAsyncResult(object):

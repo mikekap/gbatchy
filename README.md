@@ -57,6 +57,10 @@ Mini docs:
  - `pget(iterable)`: a quick way to `.get()` all the arguments passed.
  - `pmap(fn, iterable)`: same as `map(fn, iterable)`, except runs in parallel. Note: keyword arguments to pmap are passed through to fn for each element.
  - `pfilter(fn, iterable)`: same as `filter(fn, iterable)` except runs in parallel.
- - `immediate(v)`: returns an `AsyncResult`-like object that is immediately ready and `immediate(v).get() is v`.
+ - `Pool(size)`: same as gevent.pool.Pool - a way to limit the maximum concurrent amount of work.
+ - `iwait(greenlets)`: same as gevent.iwait, but works with batch greenlets. Using gevent.iwait with batch greenlets is strongly discouraged and will lead to mysterious hangs.
+ - `wait(greenlets, timeout, count)`: same as gevent.wait.
+ - `immediate(v)`: returns an `AsyncResult`-like object that is immediately ready and `immediate(v).get() is v == True`.
  - `immediate_exception(exc)`: same as `immediate`, but raises `exc`.
+ - `with may_block()`: a low-level primitive when you need to use a gevent-native blocking call between calls to @batched functions (e.g. gevent.queue).
  - `transform(pending, fn)`: a somewhat low-level, but performant way to take an `AsyncResult`-like object and run `immediate(fn(pending.get()))`. Note that fn must be pure - it cannot interact with greenlets. Any extra kwargs will be passed to `fn`.

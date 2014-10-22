@@ -1,3 +1,9 @@
+## 0.4
+ - Added a may_block context manager to be able to use gevent primitives between batch greenlets. For an example, see the iwait & wait implementations.
+ - Add a version of iwait & wait that work in a batch context.
+ - Fix *_unordered - this was previously using gevent.iwait.
+ - Add a Pool implementation that mirrors gevent.pool.Pool, but works with batch greenlets. Unfortunately it was not as simple as greenlet_class=BatchGreenlet.
+
 ## 0.3.1
  - Fix redis *scan functions.
 

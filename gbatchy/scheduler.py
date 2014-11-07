@@ -1,5 +1,5 @@
 import sys
-from .context import spawn, BatchAsyncResult
+from .context import BatchGreenlet
 from .utils import transform
 
 class Scheduler(object):
@@ -14,7 +14,7 @@ class Scheduler(object):
     def has_work(self):
         raise NotImplementedError()
 
-    def run_batch_fn(self, fn, args, aresult):
+    def run_batch_fn(self, fn, args):
         try:
             result = fn(args)
 
@@ -27,7 +27,7 @@ class Scheduler(object):
         except Exception:
             result = [Raise(*sys.exc_info())] * len(args)
 
-        aresult.set(result)
+        return result
 
 class AllAtOnceScheduler(Scheduler):
     __slots__ = ['pending_batches']
@@ -37,18 +37,20 @@ class AllAtOnceScheduler(Scheduler):
 
     def run_pending_batch(self, id_, function, args_tuple, max_size=sys.maxint):
         if id_ not in self.pending_batches:
-            aresult = BatchAsyncResult()
             arg_list = [args_tuple]
-            self.pending_batches[id_] = (function, arg_list, aresult)
+            # Make sure to init early so any contexts from the call propagate.
+            # Lists are mutable so future appends will make it to the args list.
+            greenlet = BatchGreenlet(self.run_batch_fn, function, arg_list)
+            self.pending_batches[id_] = (arg_list, greenlet)
         else:
-            _, arg_list, aresult = self.pending_batches[id_]
+            arg_list, greenlet = self.pending_batches[id_]
             arg_list.append(args_tuple)
 
         index = len(arg_list) - 1
 
         if index >= max_size - 1:
             self.pending_batches.pop(id_)
-            spawn(self.run_batch_fn, function, arg_list, aresult)
+            greenlet.start()
 
         def result_transform(result):
             r = result[index]
@@ -61,7 +63,7 @@ class AllAtOnceScheduler(Scheduler):
             else:
                 return r
 
-        return transform(aresult, result_transform)
+        return transform(greenlet, result_transform)
 
     def has_work(self):
         return bool(self.pending_batches)
@@ -69,9 +71,9 @@ class AllAtOnceScheduler(Scheduler):
     def run_next(self):
         assert self.pending_batches
 
-        for function, args, aresult in self.pending_batches.itervalues():
-            spawn(self.run_batch_fn, function, args, aresult)
-        self.pending_batches.clear()
+        self.pending_batches, pending_batches = {}, self.pending_batches
+        for _, greenlet in pending_batches.itervalues():
+            greenlet.start()
 
 
 class Raise(object):

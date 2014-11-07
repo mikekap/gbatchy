@@ -1,3 +1,6 @@
+## 0.4.1
+ - Fix a context propagation via add_auto_wrapper when using batch functions. Also makes batch functions slightly more efficient.
+
 ## 0.4
  - Added a may_block context manager to be able to use gevent primitives between batch greenlets. For an example, see the iwait & wait implementations.
  - Add a version of iwait & wait that work in a batch context.

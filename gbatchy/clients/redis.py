@@ -61,17 +61,18 @@ class BatchRedisClient(object):
 
     def _pipeline_call_impl(self, args_list, **kwargs):
         with self.redis.pipeline(**kwargs) as pipeline:
+            slices = []
+            start = 0
             for calls, in args_list:
-                for args, kwargs in calls:
-                    getattr(pipeline, args[0])(*args[1:], **kwargs)
+                for fn, args, kwargs in calls:
+                    getattr(pipeline, fn)(*args, **kwargs)
+
+                end = start + len(calls)
+                slices.append(slice(start, end))
+                start = end
 
             rv = pipeline.execute()
-            results = []
-            start = 0
-            for call_list, in args_list:
-                results.append(rv[start:start+len(call_list)])
-                start += len(call_list)
-            return results
+            return map(rv.__getitem__, slices)
 
 
 class BatchRedisPipeline(object):
@@ -85,8 +86,8 @@ class BatchRedisPipeline(object):
         setattr(self, name, method)
         return method
 
-    def _add_batch_call(self, *args, **kwargs):
-        self._batch_calls.append((args, kwargs))
+    def _add_batch_call(self, name, *args, **kwargs):
+        self._batch_calls.append((name, args, kwargs))
         return self
 
     def __enter__(self):

@@ -1,3 +1,7 @@
+## 0.4.2
+ - Small performance optimization for redis.
+ - Small performance optimization for transform() (& by proxy @batched functions)
+
 ## 0.4.1
  - Fix a context propagation via add_auto_wrapper when using batch functions. Also makes batch functions slightly more efficient.
 

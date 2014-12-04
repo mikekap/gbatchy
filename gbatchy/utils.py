@@ -170,7 +170,10 @@ class _TransformedResult(object):
 
     def get(self, block=True, timeout=None):
         if block:
-            self.pending.wait(timeout=timeout)
+            if timeout is None:
+                self.pending.get(block=True)
+            else:
+                self.pending.wait(timeout=timeout)
 
         if self.value is None and not self.pending.ready():
             raise Timeout()

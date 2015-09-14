@@ -1,3 +1,8 @@
+## 0.5
+ - Add chain() which can be used as a low-overhead way to build more efficient sequences without spawning a greenlet.
+ - Small performances optimizations for redis (__slots__)
+ - Upgrade to gevent 1.1+, while keeping the gbatchy exc_info behavior (you get the whole traceback once).
+
 ## 0.4.2
  - Small performance optimization for redis.
  - Small performance optimization for transform() (& by proxy @batched functions)

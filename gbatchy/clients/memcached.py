@@ -2,15 +2,23 @@ from collections import defaultdict
 from itertools import chain
 
 from ..batch import class_batched
+from ..utils import transform
+
+def _get_first_future_value(d):
+    return next(d.get().itervalues(), None)
 
 class BatchMemcachedClient(object):
-    __slots__ = ['client']
+    __slots__ = ('client',)
 
     def __init__(self, client):
         self.client = client
 
-    def get(self, key):
-        return next(self.get_multi([key]).itervalues(), None)
+    def get(self, key, as_future=False):
+        if as_future:
+            return transform(self.get_multi([key], as_future=True),
+                             _get_first_future_value)
+        else:
+            return next(self.get_multi([key]).itervalues(), None)
 
     @class_batched(accepts_kwargs=False)
     def get_multi(self, keys_lists):
@@ -25,15 +33,26 @@ class BatchMemcachedClient(object):
         return [{k: results[k] for k in lst if k in results}
                 for lst in saved_key_lists]
 
-    def set(self, key, value, time=0):
-        return key not in self.set_multi({key: value}, time=time)
+    def set(self, key, value, time=0, as_future=False):
+        if as_future:
+            def cb(v):
+                return key not in v.get()
+            return transform(self.set_multi({key: value}, time=time, as_future=True), cb)
+        else:
+            return key not in self.set_multi({key: value}, time=time)
 
     @class_batched()
     def set_multi(self, args_list):
         return self._do_set_command(self.client.set_multi, args_list)
 
-    def add(self, key, value, time=0):
-        return key not in self.add_multi({key: value}, time=time)
+    def add(self, key, value, time=0, as_future=False):
+        if as_future:
+            def cb(v):
+                return key not in v.get()
+
+            return transform(self.add_multi({key: value}, time=time, as_future=True), cb)
+        else:
+            return key not in self.add_multi({key: value}, time=time)
 
     @class_batched()
     def add_multi(self, args_list):

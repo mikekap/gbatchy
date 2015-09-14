@@ -53,7 +53,7 @@ class AllAtOnceScheduler(Scheduler):
             greenlet.start()
 
         def result_transform(result):
-            r = result[index]
+            r = result.get()[index]
             if isinstance(r, Raise):
                 if len(r.exc_info) == 3:
                     exc, v, tb = r.exc_info

@@ -6,7 +6,7 @@ from gevent.lock import BoundedSemaphore
 from gbatchy.context import spawn, batch_context, BatchAsyncResult
 from gbatchy.batch import batched
 from gbatchy.scheduler import Raise
-from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered, spawn_proxy, transform, immediate, Pool
+from gbatchy.utils import pmap, pfilter, pmap_unordered, pfilter_unordered, spawn_proxy, transform, chain, immediate, Pool
 
 class BatchTests(TestCase):
     def setUp(self):
@@ -345,6 +345,7 @@ class BatchTests(TestCase):
             f.rawlink(lambda _: link_data.append(True))
             complete_it()
             gevent.sleep(0)
+            self.assertTrue(f.ready())
             self.assertTrue(link_data)
 
         self.assertTrue(f.ready())
@@ -357,16 +358,44 @@ class BatchTests(TestCase):
         f.rawlink(lambda _: link_data.append(True))
         gevent.sleep(0)
         self.assertTrue(link_data)
-        
+
+    def test_greenlet(self):
+        s = BatchAsyncResult()
+        def fn():
+            return s.get()
+
+        def finish_it():
+            s.set(1)
+            gevent.sleep(0)
+
+        tfuture = spawn(fn)
+        self._do_test_future(tfuture, finish_it)
+        self.assertEquals(1, tfuture.get())
+
     def test_transform(self):
-        def multiply_by(value, m=3):
-            return value * m
+        def multiply_by(value_f, m=3):
+            return value_f.get() * m
 
         future = BatchAsyncResult()
         def finish_it():
             future.set(2)
 
         tfuture = transform(future, multiply_by, m=4)
+        self._do_test_future(tfuture, finish_it)
+        self.assertEquals(8, tfuture.get())
+
+    def test_chain(self):
+        def multiply_by(value_f, m=3):
+            self.assertTrue(value_f.ready())
+            return spawn(lambda: value_f.get() * m)
+
+        future = BatchAsyncResult()
+        def finish_it():
+            future.set(2)
+            gevent.sleep(0)
+            gevent.sleep(0)
+
+        tfuture = chain(future, multiply_by, m=4)
         self._do_test_future(tfuture, finish_it)
         self.assertEquals(8, tfuture.get())
 

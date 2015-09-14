@@ -61,12 +61,29 @@ def immediate_exception(exception, exc_info=None):
     return _ImmediateResult(exception=exception, exc_info=exc_info)
 
 def transform(pending, transformer, **kwargs):
-    """Returns an AsyncResult-like that contains the result of transformer(pending.get()).
+    """Returns an AsyncResult-like that contains the result of transformer(pending).
 
-    Note that transformer will run on the hub greenlet, so it cannot spawn/.wait/.get. If
-    you do want to spawn/wait for other greenlets, just use spawn() and .get(). This is
+    Note that transformer will run on the hub greenlet, so it cannot .wait/.get. If
+    you do want to wait for other greenlets, just use spawn() and .get(). This is
     meant to be a highly efficient wrapper, for use in, e.g. batch operations."""
     return _TransformedResult(pending, transformer, kwargs)
+
+def chain(pending, transformer, **kwargs):
+    """Returns an AsyncResult-like that contains the result of transformer(pending).get().
+
+    Note that transformer will run on the hub greenlet, so it cannot .wait/.get. This
+    is another high-performance wrapper for operations that have several steps. If
+    creating a greenlet per task is too much, consider using these, like:
+
+    initial_add = self.mc.incr(key, as_future=True)
+
+    def step_1(v):
+        if v == None:
+            return self.mc.add(key, '0', as_future=True)
+        else:
+            return gbatchy.immediate(v)
+    """
+    return _ChainedResult(pending, transformer, kwargs)
 
 def spawn_proxy(*args, **kwargs):
     """Same as spawn(), but returns a proxy type that implicitly uses the value of
@@ -76,8 +93,9 @@ def spawn_proxy(*args, **kwargs):
     """
     return LazyProxy(spawn(*args, **kwargs).get)
 
+
 class _ImmediateResult(object):
-    __slots__ = ('value', 'exception', '_exc_info')
+    __slots__ = ('value', '_exc_info', 'exception')
 
     def __init__(self, value=None, exception=None, exc_info=None):
         self.value = value
@@ -102,11 +120,10 @@ class _ImmediateResult(object):
         raise NotImplementedError()
 
     def get(self, block=True, timeout=None):
-        if self.exception is not None:
-            if self._exc_info is not None:
-                raise_exc_info_from_container(self)
-            else:
-                raise self.exception
+        if self._exc_info is not None:
+            raise_exc_info_from_container(self)
+        elif self.exception is not None:
+            raise self.exception
         return self.value
 
     def wait(self, timeout=None):
@@ -121,16 +138,16 @@ class _ImmediateResult(object):
     def unlink(self, callback):
         pass
 
+
 class _TransformedResult(object):
-    __slots__ = ('pending', 'value', 'transformer', 'kwargs', '_exception', '_exc_info')
+    __slots__ = ('pending', 'value', 'transformer', 'kwargs', '_exc_info')
 
     def __init__(self, pending, transformer=None, kwargs={}):
         self.pending = pending
         self.transformer = transformer
         self.kwargs = kwargs
         self.value = None
-        self._exception = None
-        self._exc_info = None
+        self._exc_info = ()
 
         # Links are FIFO - if others call rawlink on us, we should already
         # have called _do_transform
@@ -141,13 +158,9 @@ class _TransformedResult(object):
             return
 
         try:
-            if pending.successful():
-                self.value = self.transformer(pending.get(), **self.kwargs)
-            else:
-                assert pending.ready()
-                pending.get(block=False)
+            self.value = self.transformer(pending, **self.kwargs)
+            self._exc_info = (None, None, None)
         except Exception as ex:
-            self._exception = ex
             self._exc_info = sys.exc_info()
             add_exc_info_container(self)
         finally:
@@ -157,7 +170,7 @@ class _TransformedResult(object):
         return self.pending.ready()
 
     def successful(self):
-        return self.pending.successful() and self._exception is None
+        return self.pending.successful() and self._exc_info[0] is None
 
     def set(self, value=None):
         raise NotImplementedError()
@@ -178,11 +191,8 @@ class _TransformedResult(object):
         if self.value is None and not self.pending.ready():
             raise Timeout()
 
-        if self._exception is not None:
-            if self._exc_info is not None:
-                raise_exc_info_from_container(self)
-            else:
-                raise self._exception
+        if self._exc_info[0]:
+            raise_exc_info_from_container(self)
 
         return self.value
 
@@ -196,6 +206,101 @@ class _TransformedResult(object):
 
     def rawlink(self, callback):
         self.pending.rawlink(lambda _: callback(self))
+
+    def unlink(self):
+        raise NotImplementedError()
+
+
+class _ChainedResult(object):
+    __slots__ = ('current_future', 'value', 'transformer', 'kwargs', '_exc_info', '_links')
+
+    def __init__(self, pending, transformer=None, kwargs={}):
+        self.current_future = pending
+        self.transformer = transformer
+        self.kwargs = kwargs
+        self._links = []
+        self._exc_info = ()
+
+        pending.rawlink(self._do_transform)
+
+    @property
+    def value(self):
+        return self.get()
+
+    def _do_transform(self, pending):
+        if self.transformer is None:
+            return
+
+        try:
+            self.current_future = self.transformer(pending, **self.kwargs)
+            self._exc_info = (None, None, None)
+        except Exception as ex:
+            self._exc_info = sys.exc_info()
+            add_exc_info_container(self)
+        finally:
+            self.transformer = None
+            if self.current_future.ready():
+                for l in self._links:
+                    l()
+            else:
+                for l in self._links:
+                    self.current_future.rawlink(l)
+
+    def ready(self):
+        return self.current_future.ready() and self.transformer is None
+
+    def successful(self):
+        return self.current_future.successful() and self._exc_info[0] is None
+
+    def set(self, value=None):
+        raise NotImplementedError()
+
+    def set_exception(self, exception):
+        raise NotImplementedError()
+
+    def set_exc_info(self, exc_info):
+        raise NotImplementedError()
+
+    def get(self, block=True, timeout=None):
+        if block:
+            f = self.current_future
+            if timeout is None:
+                f.get(block=True)
+            else:
+                f.wait(timeout=timeout)
+
+            # If the transformer has just now been run, wait again.
+            if f is not self.current_future:
+                if timeout is None:
+                    self.current_future.get(block=True)
+                else:
+                    self.current_future.wait(timeout=timeout)
+
+        if not self.current_future.ready() or self.transformer is not None:
+            raise Timeout()
+
+        if self._exc_info[0] is not None:
+            raise_exc_info_from_container(self)
+
+        return self.current_future.get()
+
+    def wait(self, timeout=None):
+        f = self.current_future
+        f.wait(timeout=timeout)
+        if f is not self.current_future:
+            self.current_future.wait(timeout=timeout)
+
+        return self.current_future.value
+
+    def get_nowait(self):
+        return self.get(block=False)
+
+    def rawlink(self, callback):
+        cb = lambda _: callback(self)
+        if self.transformer is None:
+            self.current_future.rawlink(cb)
+        else:
+            self._links.append(cb)
 
     def unlink(self):
         raise NotImplementedError()

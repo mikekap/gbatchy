@@ -19,7 +19,7 @@ setup(
     packages=find_packages(exclude=['tests']),
     include_package_data=True,
     install_requires=[
-        'gevent>=1.0.1',
+        'gevent>1.0.9',
         'ProxyTypes>=0.9',
     ],
     classifiers=[

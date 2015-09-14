@@ -3,6 +3,8 @@ from functools import partial
 from ..batch import class_batched
 
 class BatchRedisClient(object):
+    __slots__ = ('redis',)
+
     def __init__(self, redis_client):
         """Create a new batchy redis client.
 
@@ -38,11 +40,6 @@ class BatchRedisClient(object):
     def flushdb(self):
         return self.redis.flushdb()
 
-    def __getattr__(self, name):
-        method = partial(self._batch_call, name)
-        setattr(self, name, method)
-        return method
-
     @class_batched()
     def _batch_call(self, args_list):
         with self.redis.pipeline() as pipeline:
@@ -50,6 +47,9 @@ class BatchRedisClient(object):
                 getattr(pipeline, args[0])(*args[1:], **kwargs)
 
             return pipeline.execute()
+
+    def __getattr__(self, name):
+        return partial(self._batch_call, name)
 
     @class_batched(accepts_kwargs=False)
     def _pipeline_call(self, args_list):
@@ -76,31 +76,31 @@ class BatchRedisClient(object):
 
 
 class BatchRedisPipeline(object):
+    __slots__ = ('redis', '_batch_calls', '_silent_failure')
+
     def __init__(self, redis, silent_failure=False):
         self.redis = redis
         self._batch_calls = []
         self._silent_failure = silent_failure
 
-    def __getattr__(self, name):
-        method = partial(self._add_batch_call, name)
-        setattr(self, name, method)
-        return method
-
     def _add_batch_call(self, name, *args, **kwargs):
         self._batch_calls.append((name, args, kwargs))
         return self
 
+    def __getattr__(self, name):
+        return partial(self._add_batch_call, name)
+
     def __enter__(self):
         return self
 
-    def __exit__(self, type, value, traceback):
+    def __exit__(self, typ, value, traceback):
         self._batch_calls = []
 
-    def execute(self):
+    def execute(self, **kwargs):
         try:
             if self._silent_failure:
-                return self.redis._silent_pipeline_call(self._batch_calls)
+                return self.redis._silent_pipeline_call(self._batch_calls, **kwargs)
             else:
-                return self.redis._pipeline_call(self._batch_calls)
+                return self.redis._pipeline_call(self._batch_calls, **kwargs)
         finally:
             self._batch_calls = []

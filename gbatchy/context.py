@@ -129,12 +129,14 @@ _EXC_INFO_LIST = OrderedDict()
 
 def add_exc_info_container(obj):
     if len(_EXC_INFO_LIST) >= MAX_EXC_INFOS:
-        _EXC_INFO_LIST.popitem(last=True)[0]._exc_info = None
+        obj = _EXC_INFO_LIST.popitem(last=True)[0]
+        obj._exc_info = (obj._exc_info[0], obj._exc_info[1], None)
     _EXC_INFO_LIST[obj] = True
 
 def raise_exc_info_from_container(obj):
     _EXC_INFO_LIST.pop(obj, None)
-    (cls, val, tb), obj._exc_info = obj._exc_info, None
+    cls, val, tb = obj._exc_info
+    obj._exc_info = (cls, val, None)
     raise cls, val, tb
 
 
@@ -149,7 +151,7 @@ class BatchGreenlet(_GeventGreenlet):
         self.rawlink(self.context.greenlet_finished)
 
         self.is_blocked = True
-        self._exc_info = None
+        self._exc_info = ()
 
         for wrapper in AUTO_WRAPPERS:
             self._run = wrapper(self._run)
@@ -161,7 +163,7 @@ class BatchGreenlet(_GeventGreenlet):
                 link(self)
             except:
                 self.hub.handle_error((link, self), *sys.exc_info())
-        del self._links[:]
+        del links[:]
 
     def awaiting_batch(self):
         assert not self.is_blocked
@@ -177,17 +179,19 @@ class BatchGreenlet(_GeventGreenlet):
 
     def _report_error(self, exc_info):
         """Overridden to add the traceback."""
+        super(BatchGreenlet, self)._report_error(exc_info)
         self._exc_info = exc_info
         add_exc_info_container(self)
-        super(BatchGreenlet, self)._report_error(exc_info)
 
     def _get(self):
-        if self._exception is None:
-            return self.value
-        elif self._exc_info:
+        if self._exc_info[0] is not None:
             raise_exc_info_from_container(self)
         else:
-            raise self._exception
+            return self.value
+
+    @property
+    def exception(self):
+        return self._exc_info[1] if self._exc_info else None
 
     def get(self, block=True):
         if block:
@@ -206,6 +210,9 @@ class BatchGreenlet(_GeventGreenlet):
             return self._get()
         else:
             raise Timeout()
+
+    def get_nowait(self):
+        return self.get(block=False)
 
     def join(self, timeout=None):
         """Wait until the greenlet finishes or *timeout* expires.
@@ -303,13 +310,11 @@ def may_block():
 class BatchAsyncResult(object):
     """A slight wrapper around AsyncResult that notifies the greenlet that it's waiting for a batch result."""
 
-    __slots__ = ['_ready', '_exc_info', 'exception', 'value', '_links', '_notifier']
+    __slots__ = ['_exc_info', 'value', '_links', '_notifier']
 
     def __init__(self):
-        self._ready = False
-        self._exc_info = None
+        self._exc_info = ()
         self.value = None
-        self.exception = None
         self._links = []
         self._notifier = None
 
@@ -324,50 +329,42 @@ class BatchAsyncResult(object):
 
     def set(self, value):
         self.value = value
-        self._ready = True
+        self._exc_info = (None, None, None)
 
         if self._links and not self._notifier:
             self._notifier = get_hub().loop.run_callback(self._notify_links)
 
     def set_exc_info(self, exc_info):
         self._exc_info = exc_info
-        self.exception = exc_info[1]
         add_exc_info_container(self)
-        self._ready = True
 
         if self._links and not self._notifier:
             self._notifier = get_hub().loop.run_callback(self._notify_links)
 
     def set_exception(self, exc):
-        self.exception = exc
-        self._ready = True
-
-        if self._links and not self._notifier:
-            self._notifier = get_hub().loop.run_callback(self._notify_links)
+        self.set_exc_info((type(exc), exc, None))
 
     def successful(self):
         """Return true if and only if it is ready and holds a value"""
-        return self._ready and self.exception is None
+        return self._exc_info and self._exc_info[0] is None
 
     def ready(self):
-        return self._ready
+        return bool(self._exc_info)
 
     def _get(self):
-        if self.exception is None:
-            return self.value
-        elif self._exc_info:
+        if self._exc_info[0]:
             raise_exc_info_from_container(self)
         else:
-            raise self.exception
+            return self.value
 
     def get(self, block=True, timeout=None):
         if timeout is not None:
             self.wait(timeout=timeout)
-            if not self._ready:
+            if not self._exc_info:
                 raise Timeout()
 
         if block:
-            if not self._ready:
+            if not self._exc_info:
                 switch = getcurrent().switch
                 self._links.append(switch)
                 try:
@@ -422,7 +419,7 @@ class BatchAsyncResult(object):
         if not callable(callback):
             raise TypeError('Expected callable: %r' % (callback, ))
         self._links.append(callback)
-        if self._ready and not self._notifier:
+        if self._exc_info and not self._notifier:
             self._notifier = get_hub().loop.run_callback(self._notify_links)
 
     def unlink(self, callback):
@@ -433,6 +430,10 @@ class BatchAsyncResult(object):
             pass
 
     # link protocol
+    @property
+    def exception(self):
+        return self._exc_info[1] if self._exc_info else None
+
     def __call__(self, source):
         if source.successful():
             self.set(source.value)

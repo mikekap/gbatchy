@@ -348,6 +348,9 @@ class BatchAsyncResult(object):
         """Return true if and only if it is ready and holds a value"""
         return self._exc_info and self._exc_info[0] is None
 
+    def ready(self):
+        return bool(self._exc_info)
+
     def _get(self):
         if self._exc_info[0]:
             raise_exc_info_from_container(self)

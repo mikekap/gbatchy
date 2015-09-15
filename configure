@@ -14,8 +14,8 @@ exit
 from jinja2 import FileSystemLoader, Environment
 jinja = Environment(loader=FileSystemLoader('.'), trim_blocks=True, lstrip_blocks=True)
 
-STANDARD_DEPS = ['gevent', 'ProxyTypes']
-PYPY_STANDARD_DEPS = ['https://github.com/surfly/gevent/archive/master.zip', 'ProxyTypes']
+STANDARD_DEPS = ['gevent==1.1b4', 'ProxyTypes']
+PYPY_STANDARD_DEPS = STANDARD_DEPS
 # TODO: For some reason objproxies fails to install with tox.
 PY3_DEPS = list((set(STANDARD_DEPS) - {'ProxyTypes'}) | {'objproxies'})
 OPTIONAL_DEPS = ['redis', 'pylibmc']
